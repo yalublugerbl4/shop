@@ -70,10 +70,9 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             description = ""
             
             # Поиск названия товара (оригинальное, без перевода)
-            # Сначала ищем в мета-тегах - там обычно оригинальное название
             title = None
             
-            # Ищем оригинальное название в JSON-LD
+            # Ищем оригинальное название в JSON-LD (там обычно английское оригинальное)
             json_ld_scripts = soup.find_all('script', type='application/ld+json')
             for json_ld in json_ld_scripts:
                 try:
@@ -83,35 +82,64 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         data = data[0]
                     
                     if isinstance(data, dict):
-                        # Ищем название в JSON-LD (там обычно оригинальное)
+                        # Ищем название в JSON-LD - предпочитаем английское
                         if 'name' in data:
-                            title = data['name']
-                            print(f"Found title from JSON-LD name: {title[:50]}...")
-                            break
+                            candidate = data['name']
+                            # Предпочитаем названия с латинскими буквами (английские)
+                            if re.search(r'[a-zA-Z]', candidate):
+                                title = candidate
+                                print(f"Found title from JSON-LD name: {title[:50]}...")
+                                break
                         elif 'alternateName' in data:
-                            title = data['alternateName']
-                            print(f"Found title from JSON-LD alternateName: {title[:50]}...")
-                            break
-                except:
+                            candidate = data['alternateName']
+                            if re.search(r'[a-zA-Z]', candidate):
+                                title = candidate
+                                print(f"Found title from JSON-LD alternateName: {title[:50]}...")
+                                break
+                except Exception as e:
+                    print(f"Error parsing JSON-LD for title: {e}")
                     pass
             
-            # Если не нашли в JSON-LD, ищем в мета-тегах
+            # Если не нашли в JSON-LD, ищем в JavaScript переменных (там часто оригинальное название)
             if not title:
-                meta_title = soup.find('meta', property='og:title')
-                if meta_title:
-                    title = meta_title.get('content', '').strip()
-                    print(f"Found title from og:title: {title[:50]}...")
+                # Ищем в script тегах переменные типа productName, product_title, etc.
+                script_tags = soup.find_all('script')
+                for script in script_tags:
+                    if script.string:
+                        # Ищем паттерны типа "name": "New Balance..."
+                        name_patterns = [
+                            re.compile(r'["\']name["\']\s*[:=]\s*["\']([^"\']+?)["\']', re.IGNORECASE),
+                            re.compile(r'["\']productName["\']\s*[:=]\s*["\']([^"\']+?)["\']', re.IGNORECASE),
+                            re.compile(r'["\']title["\']\s*[:=]\s*["\']([^"\']+?)["\']', re.IGNORECASE),
+                        ]
+                        for pattern in name_patterns:
+                            matches = pattern.findall(script.string)
+                            for match in matches:
+                                # Предпочитаем названия с латинскими буквами
+                                if re.search(r'[a-zA-Z]', match) and len(match) > 10:
+                                    title = match.strip()
+                                    print(f"Found title from script variable: {title[:50]}...")
+                                    break
+                            if title:
+                                break
+                    if title:
+                        break
             
             # Если не нашли, ищем в data-атрибутах
             if not title:
-                # Ищем элементы с data-name или data-product-name
-                title_elem = soup.select_one('[data-name], [data-product-name], [data-title]')
+                title_elem = soup.select_one('[data-name], [data-product-name], [data-title], [data-original-name]')
                 if title_elem:
-                    title = title_elem.get('data-name') or title_elem.get('data-product-name') or title_elem.get('data-title')
-                    if title:
-                        print(f"Found title from data-attribute: {title[:50]}...")
+                    candidate = (title_elem.get('data-name') or 
+                                title_elem.get('data-product-name') or 
+                                title_elem.get('data-title') or
+                                title_elem.get('data-original-name'))
+                    if candidate:
+                        # Предпочитаем английские названия
+                        if re.search(r'[a-zA-Z]', candidate):
+                            title = candidate
+                            print(f"Found title from data-attribute: {title[:50]}...")
             
-            # В последнюю очередь пробуем селекторы (но предпочитаем английские названия)
+            # В последнюю очередь пробуем селекторы
             if not title:
                 title_selectors = [
                     'h1.product-title',
@@ -127,16 +155,26 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 for selector in title_selectors:
                     title_elem = soup.select_one(selector)
                     if title_elem:
-                        title = title_elem.get_text(strip=True)
-                        if title and len(title) > 5:
+                        candidate = title_elem.get_text(strip=True)
+                        if candidate and len(candidate) > 5:
+                            title = candidate
                             print(f"Found title with selector '{selector}': {title[:50]}...")
                             break
             
-            # Очистка названия от суффиксов сайта
+            # Очистка названия от суффиксов сайта и переведенных частей
             if title:
                 title = re.sub(r'\s*[-|]\s*thepoizon.*$', '', title, flags=re.IGNORECASE)
                 title = re.sub(r'\s*[-|]\s*POIZON.*$', '', title, flags=re.IGNORECASE)
                 title = re.sub(r'\s*[-|]\s*得物.*$', '', title, flags=re.IGNORECASE)
+                # Убираем типичные переводы в конце (если есть оригинальное название в начале)
+                # Например: "New Balance NB 850 Устойчивые к истиранию..." -> "New Balance NB 850"
+                if re.search(r'[a-zA-Z]', title):
+                    # Пытаемся оставить только английскую часть
+                    parts = re.split(r'\s+[А-Яа-яЁё]', title)
+                    if len(parts) > 0 and parts[0].strip():
+                        english_part = parts[0].strip()
+                        if len(english_part) > 10:  # Если английская часть достаточно длинная
+                            title = english_part
                 title = title.strip()
             
             # Поиск цены
@@ -297,8 +335,9 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     pass
             
             # Если не нашли в JSON-LD, ищем в галерее товара
-            if len(found_urls) < 3:
-                # Селекторы для галереи товара (не главное изображение, а именно галерея)
+            if len(found_urls) == 0:
+                print("Searching for images in HTML gallery...")
+                # Селекторы для галереи товара
                 gallery_selectors = [
                     '.product-gallery img',
                     '.product-images img',
@@ -306,29 +345,39 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     '.swiper-slide img',
                     '.slider-item img',
                     '.product-photos img',
-                    '[class*="gallery"] [class*="item"] img',
-                    '[class*="thumb"] img',
-                    '.product-thumbnails img'
+                    '[class*="gallery"] img',
+                    '[class*="slider"] img',
+                    '[class*="carousel"] img',
+                    '[class*="swiper"] img',
+                    '.product-image img',
+                    '.product__image img',
+                    '[class*="product"] [class*="image"] img',
+                    '[class*="goods"] img',
+                    'img[src*="product"]',
+                    'img[src*="goods"]'
                 ]
                 
                 for selector in gallery_selectors:
                     img_tags = soup.select(selector)
+                    print(f"  Trying selector '{selector}': found {len(img_tags)} elements")
                     for img in img_tags:
                         # Ищем оригинальные изображения (не миниатюры)
                         img_url = None
                         
-                        # Проверяем data-атрибуты для оригинальных изображений
+                        # Проверяем data-атрибуты для оригинальных изображений (в приоритете)
                         img_url = (img.get('data-original') or 
                                   img.get('data-src-large') or 
                                   img.get('data-full') or
                                   img.get('data-url') or
                                   img.get('data-original-src') or
+                                  img.get('data-lazy-src') or
+                                  img.get('data-src') or
                                   img.get('src'))
                         
-                        # Пропускаем миниатюры (обычно содержат 'thumb' или очень маленькие URL)
                         if img_url:
-                            # Пропускаем миниатюры и иконки
-                            if 'thumb' in img_url.lower() or 'icon' in img_url.lower() or 'placeholder' in img_url.lower():
+                            # Пропускаем миниатюры, иконки, логотипы
+                            img_url_lower = img_url.lower()
+                            if any(skip in img_url_lower for skip in ['thumb', 'icon', 'placeholder', 'logo', 'avatar', 'default']):
                                 continue
                             
                             # Нормализуем URL
@@ -339,51 +388,116 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             
                             if img_url.startswith('http') and img_url not in found_urls:
                                 found_urls.append(img_url)
-                                if len(found_urls) >= 3:
-                                    break
+                                print(f"    Added image: {img_url[:80]}...")
                     
-                    if len(found_urls) >= 3:
-                        break
-            
-            # Если все еще не нашли достаточно, ищем любые изображения товара (но не главное)
-            if len(found_urls) < 3:
-                product_img_selectors = [
-                    '.product-image:not(:first-child) img',
-                    '.product__image:not(:first-child) img',
-                    '[class*="product"]:not(:first-child) img[src*="http"]'
-                ]
+                    # Не прерываемся на 3, собираем все
                 
-                for selector in product_img_selectors:
-                    img_tags = soup.select(selector)
-                    for img in img_tags:
-                        img_url = img.get('data-src') or img.get('data-original') or img.get('src')
-                        if img_url:
-                            if img_url.startswith('//'):
-                                img_url = 'https:' + img_url
-                            elif img_url.startswith('/'):
-                                img_url = base_domain + img_url
-                            
-                            if img_url.startswith('http') and img_url not in found_urls:
-                                found_urls.append(img_url)
-                                if len(found_urls) >= 3:
-                                    break
-                    if len(found_urls) >= 3:
-                        break
+                print(f"Found {len(found_urls)} images in HTML gallery")
             
-            print(f"Found {len(found_urls)} image URLs")
+            # Если все еще не нашли, ищем в JavaScript переменных
+            if len(found_urls) == 0:
+                print("Searching for images in JavaScript variables...")
+                script_tags = soup.find_all('script')
+                for script in script_tags:
+                    if script.string:
+                        # Ищем паттерны типа "image": "http://..." или imageUrls: [...]
+                        img_patterns = [
+                            re.compile(r'["\']image["\']\s*[:=]\s*["\']([^"\']+?)["\']', re.IGNORECASE),
+                            re.compile(r'["\']imageUrl["\']\s*[:=]\s*["\']([^"\']+?)["\']', re.IGNORECASE),
+                            re.compile(r'["\']url["\']\s*[:=]\s*["\']([^"\']+?\.(?:jpg|jpeg|png|webp))["\']', re.IGNORECASE),
+                        ]
+                        for pattern in img_patterns:
+                            matches = pattern.findall(script.string)
+                            for match in matches:
+                                if match.startswith('http') and match not in found_urls:
+                                    # Пропускаем миниатюры
+                                    if not any(skip in match.lower() for skip in ['thumb', 'icon', 'placeholder']):
+                                        found_urls.append(match)
+                                        print(f"    Found image in script: {match[:80]}...")
             
-            # Скачиваем и конвертируем изображения (первые 3)
-            for img_url in found_urls[:3]:
+            print(f"Total found {len(found_urls)} image URLs before downloading")
+            
+            # Скачиваем и конвертируем изображения (все найденные, максимум 10)
+            max_images = min(len(found_urls), 10)
+            for idx, img_url in enumerate(found_urls[:max_images], 1):
+                print(f"Downloading image {idx}/{max_images}: {img_url[:80]}...")
                 img_base64 = await download_image_to_base64(img_url, client)
                 if img_base64:
                     images.append(img_base64)
-                    if len(images) >= 3:
-                        break
+                    print(f"  Successfully downloaded image {idx}")
+                else:
+                    print(f"  Failed to download image {idx}")
             
             print(f"Downloaded {len(images)} images")
             
-            # Описание не нужно - оставляем пустым
-            description = ""
+            # Парсинг размеров и цен
+            sizes_prices = []
+            print("Searching for sizes and prices...")
+            
+            # Ищем размеры в различных селекторах
+            size_selectors = [
+                '[class*="size"]',
+                '[class*="Size"]',
+                '[data-size]',
+                '.size-selector',
+                '.product-sizes',
+                '[class*="sku"]'
+            ]
+            
+            for selector in size_selectors:
+                size_elements = soup.select(selector)
+                if size_elements:
+                    print(f"  Found size elements with selector '{selector}': {len(size_elements)}")
+                    for elem in size_elements:
+                        # Получаем текст элемента
+                        text = elem.get_text(strip=True)
+                        # Ищем паттерн: размер и цена
+                        # Примеры: "39,5 (40,5) 9 164 ₽", "38 (39) 10 072 ₽"
+                        size_price_match = re.search(r'([\d,]+(?:\s*\([^)]+\))?)\s+([\d\s]+)\s*[₽₴]', text)
+                        if size_price_match:
+                            size_text = size_price_match.group(1).strip()
+                            price_text = size_price_match.group(2).strip().replace(' ', '')
+                            try:
+                                price_num = float(price_text)
+                                sizes_prices.append({
+                                    'size': size_text,
+                                    'price': int(price_num * 100)  # в копейках
+                                })
+                                print(f"    Found size: {size_text}, price: {price_num} руб")
+                            except:
+                                pass
+            
+            # Если не нашли через селекторы, ищем по тексту страницы
+            if not sizes_prices:
+                print("  Trying to find sizes in page text...")
+                page_text = soup.get_text()
+                # Паттерн для размеров и цен: "39,5(40,5) 9 164 ₽"
+                size_price_pattern = re.compile(r'(\d+[,.]?\d*\s*\([^)]+\))\s+(\d+(?:\s+\d+)*)\s*[₽₴]')
+                matches = size_price_pattern.findall(page_text)
+                for match in matches[:20]:  # Максимум 20 размеров
+                    size_text = match[0].strip()
+                    price_text = match[1].strip().replace(' ', '')
+                    try:
+                        price_num = float(price_text)
+                        sizes_prices.append({
+                            'size': size_text,
+                            'price': int(price_num * 100)
+                        })
+                        print(f"    Found size: {size_text}, price: {price_num} руб")
+                    except:
+                        pass
+            
+            # Формируем описание из размеров и цен
+            if sizes_prices:
+                description_lines = ["Размеры и цены:"]
+                for item in sizes_prices:
+                    price_rub = item['price'] / 100
+                    description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                description = "\n".join(description_lines)
+                print(f"Created description with {len(sizes_prices)} sizes")
+            else:
+                description = ""
+                print("No sizes found, description will be empty")
             
             if not title:
                 raise Exception("Не удалось найти название товара. Возможно, структура страницы изменилась или товар недоступен.")
@@ -398,13 +512,21 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 
                 raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru. Название товара найдено: '{title[:50]}...'")
             
-            print(f"Successfully parsed product: {title[:50]}... (price: {price} копеек)")
+            # Используем минимальную цену из размеров, если она найдена, иначе основную цену
+            final_price = price
+            if sizes_prices:
+                # Берем минимальную цену среди размеров
+                min_size_price = min(item['price'] for item in sizes_prices)
+                final_price = min_size_price
+                print(f"Using minimum size price: {final_price} копеек (from {len(sizes_prices)} sizes)")
+            
+            print(f"Successfully parsed product: {title[:50]}... (price: {final_price} копеек, images: {len(images)}, sizes: {len(sizes_prices)})")
             
             return {
                 'title': title[:500],  # Ограничиваем длину
-                'price_cents': price,
-                'description': description[:2000] if description else '',  # Ограничиваем длину
-                'images_base64': images
+                'price_cents': final_price,
+                'description': description[:2000] if description else '',  # Размеры и цены
+                'images_base64': images  # Все найденные изображения (до 10)
             }
             
     except httpx.HTTPStatusError as e:
