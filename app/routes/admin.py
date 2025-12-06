@@ -91,7 +91,7 @@ async def delete_product(
 
 
 class ParsePoizonRequest(BaseModel):
-    url: str = Field(..., description="URL товара с POIZON")
+    url: str = Field(..., description="URL товара с thepoizon.ru")
     category: str = Field(..., min_length=1)
     season: Optional[str] = Field(None)
     
@@ -109,7 +109,7 @@ class ParsePoizonRequest(BaseModel):
 
 
 class ParsePoizonBatchRequest(BaseModel):
-    urls: List[str] = Field(..., min_items=1, max_items=50, description="Список URL товаров с POIZON")
+    urls: List[str] = Field(..., min_items=1, max_items=50, description="Список URL товаров с thepoizon.ru")
     category: str = Field(..., min_length=1)
     season: Optional[str] = Field(None)
     
@@ -132,7 +132,7 @@ async def parse_poizon(
     request: ParsePoizonRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Парсить товар с POIZON (только админ)"""
+    """Парсить товар с thepoizon.ru (только админ)"""
     user = await require_admin(current_user)
     
     # Парсим товар
