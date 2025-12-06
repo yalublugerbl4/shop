@@ -63,17 +63,148 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             print(f"Received HTML, length: {len(response.text)}")
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Парсинг данных (адаптировано под структуру POIZON)
+            # Парсинг данных из __NEXT_DATA__ (Next.js хранит все данные в JSON)
             title = None
             price = None
             images = []
             description = ""
+            next_data = None
+            
+            # Ищем __NEXT_DATA__ скрипт (там все данные товара)
+            next_data_script = soup.find('script', id='__NEXT_DATA__')
+            if next_data_script:
+                try:
+                    import json
+                    next_data = json.loads(next_data_script.string)
+                    print("Found __NEXT_DATA__ script with product data")
+                except Exception as e:
+                    print(f"Error parsing __NEXT_DATA__: {e}")
+            
+            # Если нашли __NEXT_DATA__, используем данные оттуда
+            if next_data:
+                try:
+                    # Извлекаем данные из структуры Next.js
+                    props = next_data.get('props', {})
+                    page_props = props.get('pageProps', {})
+                    
+                    # Ищем данные товара в разных местах структуры
+                    product_data = (page_props.get('productData') or 
+                                  page_props.get('product') or
+                                  page_props.get('initialState', {}).get('product'))
+                    
+                    if product_data:
+                        print("Found product data in __NEXT_DATA__")
+                        
+                        # Название
+                        title = (product_data.get('title') or 
+                               product_data.get('name') or
+                               product_data.get('productName') or
+                               product_data.get('spuName'))
+                        
+                        # Изображения (сохраняем как URL, потом скачаем)
+                        images_data = (product_data.get('images') or 
+                                     product_data.get('imageList') or
+                                     product_data.get('imageUrls') or
+                                     product_data.get('spuImages') or
+                                     product_data.get('mainImages') or
+                                     product_data.get('detailImages'))
+                        
+                        if images_data:
+                            if isinstance(images_data, list):
+                                for img in images_data[:10]:
+                                    img_url = None
+                                    if isinstance(img, str):
+                                        img_url = img
+                                    elif isinstance(img, dict):
+                                        img_url = img.get('url') or img.get('src') or img.get('imageUrl') or img.get('originUrl')
+                                    
+                                    if img_url:
+                                        # Нормализуем URL
+                                        if img_url.startswith('//'):
+                                            img_url = 'https:' + img_url
+                                        elif img_url.startswith('/'):
+                                            img_url = base_domain + img_url
+                                        
+                                        if img_url.startswith('http') and img_url not in images:
+                                            images.append(img_url)  # Пока сохраняем как URL
+                            elif isinstance(images_data, str):
+                                if images_data.startswith('http') and images_data not in images:
+                                    images.append(images_data)
+                        
+                        print(f"Found {len(images)} image URLs from __NEXT_DATA__")
+                        
+                        # SKU данные (размеры и цены)
+                        skus = (product_data.get('skus') or 
+                              product_data.get('skuList') or
+                              product_data.get('skuInfos'))
+                        
+                        if skus and isinstance(skus, list):
+                            sizes_prices = []
+                            for sku in skus:
+                                size = sku.get('size') or sku.get('sizeName') or sku.get('specValue')
+                                price_value = sku.get('price') or sku.get('salePrice') or sku.get('currentPrice')
+                                
+                                if size and price_value:
+                                    try:
+                                        # Цена может быть в разных форматах
+                                        if isinstance(price_value, (int, float)):
+                                            price_cents = int(price_value * 100) if price_value < 1000 else int(price_value)
+                                        else:
+                                            price_str = str(price_value).replace(' ', '').replace(',', '')
+                                            price_num = float(re.sub(r'[^\d.]', '', price_str))
+                                            price_cents = int(price_num * 100) if price_num < 1000 else int(price_num)
+                                        
+                                        sizes_prices.append({
+                                            'size': str(size),
+                                            'price': price_cents
+                                        })
+                                    except:
+                                        pass
+                            
+                            if sizes_prices:
+                                description_lines = ["Размеры и цены:"]
+                                for item in sizes_prices:
+                                    price_rub = item['price'] / 100
+                                    description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                                description = "\n".join(description_lines)
+                                
+                                # Минимальная цена
+                                min_price = min(item['price'] for item in sizes_prices)
+                                price = min_price
+                                
+                                print(f"Found {len(sizes_prices)} sizes from __NEXT_DATA__")
+                        
+                        # Если цена не найдена из SKU, ищем основную цену
+                        if not price:
+                            price_value = (product_data.get('price') or 
+                                         product_data.get('salePrice') or
+                                         product_data.get('currentPrice') or
+                                         product_data.get('lowPrice'))
+                            
+                            if price_value:
+                                try:
+                                    if isinstance(price_value, (int, float)):
+                                        price = int(price_value * 100) if price_value < 1000 else int(price_value)
+                                    else:
+                                        price_str = str(price_value).replace(' ', '').replace(',', '')
+                                        price_num = float(re.sub(r'[^\d.]', '', price_str))
+                                        price = int(price_num * 100) if price_num < 1000 else int(price_num)
+                                except:
+                                    pass
+                        
+                        print(f"Parsed from __NEXT_DATA__: title={bool(title)}, price={bool(price)}, images={len(images)}")
+                
+                except Exception as e:
+                    print(f"Error extracting data from __NEXT_DATA__: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Если не нашли в __NEXT_DATA__, продолжаем обычный парсинг
             
             # Поиск названия товара (оригинальное, без перевода)
-            title = None
-            
-            # Ищем оригинальное название в JSON-LD (там обычно английское оригинальное)
-            json_ld_scripts = soup.find_all('script', type='application/ld+json')
+            if not title:
+                # Ищем оригинальное название в JSON-LD (там обычно английское оригинальное)
+                json_ld_scripts = soup.find_all('script', type='application/ld+json')
             for json_ld in json_ld_scripts:
                 try:
                     import json
@@ -430,9 +561,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Downloaded {len(images)} images")
             
-            # Парсинг размеров и цен
+            # Парсинг размеров и цен (если еще не нашли из __NEXT_DATA__)
             sizes_prices = []
-            print("Searching for sizes and prices...")
+            if not description:  # Если описание пустое, значит размеры не найдены
+                print("Searching for sizes and prices...")
             
             # Ищем размеры в различных селекторах
             size_selectors = [

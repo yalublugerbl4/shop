@@ -5,6 +5,7 @@ import asyncio
 from app.middleware.telegram_auth import get_current_user, require_admin
 from app.db import queries
 from app.utils.poizon_parser import parse_poizon_product
+from app.utils.poizon_category_parser import extract_product_links_from_category
 
 router = APIRouter()
 
@@ -214,5 +215,113 @@ async def parse_poizon_batch(
         # Небольшая задержка между запросами
         if len(results["success"]) + len(results["failed"]) < len(request.urls):
             await asyncio.sleep(1)
+    
+    return results
+
+
+class ParseCategoryRequest(BaseModel):
+    category_url: str = Field(..., description="URL категории на thepoizon.ru")
+    category: str = Field(..., min_length=1, description="Категория товара для сохранения в БД")
+    season: Optional[str] = Field(None)
+    max_products: Optional[int] = Field(50, ge=1, le=200, description="Максимальное количество товаров для парсинга")
+    
+    @validator('category_url')
+    def validate_category_url(cls, v):
+        if not v.startswith('http'):
+            raise ValueError('URL must start with http:// or https://')
+        if '/product/' in v:
+            raise ValueError('URL должен быть категории, а не товара')
+        return v
+    
+    @validator('season')
+    def validate_season(cls, v):
+        if v and v not in ['winter', 'demi', 'all']:
+            raise ValueError('season must be one of: winter, demi, all')
+        return v
+
+
+@router.post("/parse-category")
+async def parse_category(
+    request: ParseCategoryRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Автоматический парсинг категории - собирает все товары из категории и добавляет в БД
+    Аналогично reads_files() из примера
+    """
+    user = await require_admin(current_user)
+    
+    results = {
+        "total_links_found": 0,
+        "success": [],
+        "failed": [],
+        "status": "in_progress"
+    }
+    
+    try:
+        # Шаг 1: Собираем все ссылки на товары из категории
+        print(f"Extracting product links from category: {request.category_url}")
+        product_links = await extract_product_links_from_category(request.category_url)
+        
+        results["total_links_found"] = len(product_links)
+        print(f"Found {len(product_links)} product links")
+        
+        if not product_links:
+            return {
+                **results,
+                "status": "completed",
+                "message": "Не найдено товаров в категории"
+            }
+        
+        # Ограничиваем количество
+        product_links = product_links[:request.max_products]
+        
+        # Шаг 2: Парсим каждый товар
+        print(f"Parsing {len(product_links)} products...")
+        
+        for idx, url in enumerate(product_links, 1):
+            try:
+                print(f"Parsing product {idx}/{len(product_links)}: {url[:80]}...")
+                parsed = await parse_poizon_product(url)
+                
+                if parsed:
+                    product_data = {
+                        'category': request.category,
+                        'season': request.season,
+                        'title': parsed['title'],
+                        'description': parsed.get('description', ''),
+                        'price_cents': parsed['price_cents'],
+                        'images_base64': parsed.get('images_base64', [])
+                    }
+                    
+                    product = queries.create_product(product_data)
+                    results["success"].append({
+                        "url": url,
+                        "product_id": product['id'],
+                        "title": product['title']
+                    })
+                else:
+                    results["failed"].append({
+                        "url": url,
+                        "error": "Failed to parse product"
+                    })
+            
+            except Exception as e:
+                results["failed"].append({
+                    "url": url,
+                    "error": str(e)
+                })
+                print(f"Error parsing {url}: {e}")
+            
+            # Задержка между запросами (чтобы не нагружать сайт)
+            if idx < len(product_links):
+                await asyncio.sleep(2)
+        
+        results["status"] = "completed"
+        
+    except Exception as e:
+        results["status"] = "error"
+        results["error"] = str(e)
+        print(f"Error parsing category: {e}")
     
     return results
