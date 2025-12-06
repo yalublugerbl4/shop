@@ -689,89 +689,141 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             print(f"Downloaded {len(images)} images")
             
             # Парсинг размеров и цен (если еще не нашли из __NEXT_DATA__)
-            # Инициализируем sizes_prices только если description не установлено
+            # Используем селекторы из Selenium кода
             if not description:
                 sizes_prices = []
-                print("Searching for sizes and prices in HTML (fallback)...")
-            
-            # Ищем размеры в различных селекторах
-            if not description:
-                size_selectors = [
-                    'div.SkuPanel_group__egmoX',  # Специфичный для thepoizon.ru
-                    '[class*="SkuPanel"]',
-                    '[class*="sku"]',
-                    '[class*="Sku"]',
-                    '[class*="size"]',
-                    '[class*="Size"]',
-                    '[data-size]',
-                    '.size-selector',
-                    '.product-sizes',
-                    '[class*="size-select"]',
-                    'div[class*="size"]',
-                    'span[class*="size"]',
-                    'button[class*="size"]'
-                ]
+                print("Searching for sizes and prices using SkuPanel selectors...")
                 
-                for selector in size_selectors:
-                    size_elements = soup.select(selector)
-                    if size_elements:
-                        print(f"  Found {len(size_elements)} elements with selector '{selector}'")
-                        for elem in size_elements:
-                            # Получаем текст элемента и родительского элемента
-                            text = elem.get_text(strip=True)
-                            parent_text = elem.parent.get_text(strip=True) if elem.parent else ""
-                            
-                            # Ищем паттерн: размер и цена в разных форматах
-                            # Примеры: "39,5 (40,5) 9 164 ₽", "38 (39) 10 072 ₽", "40.5 9120 ₽"
-                            patterns = [
-                                re.compile(r'([\d,]+(?:\s*\([^)]+\))?)\s+(\d+(?:\s+\d+)*)\s*[₽₴]', re.IGNORECASE),
-                                re.compile(r'размер[:\s]+([\d,]+(?:\s*\([^)]+\))?).*?(\d+(?:\s+\d+)*)\s*[₽₴]', re.IGNORECASE),
-                                re.compile(r'(\d{1,2}[,.]?\d*)\s*[:\-]\s*(\d+(?:\s+\d+)*)\s*[₽₴]', re.IGNORECASE),
-                            ]
-                            
-                            # Пробуем в тексте элемента и родительского
-                            search_texts = [text, parent_text] if parent_text else [text]
-                            
-                            for search_text in search_texts:
-                                for pattern in patterns:
-                                    size_price_match = pattern.search(search_text)
-                                    if size_price_match:
-                                        size_text = size_price_match.group(1).strip()
-                                        price_text = size_price_match.group(2).strip().replace(' ', '')
-                                        try:
-                                            price_num = float(price_text)
-                                            if 1000 <= price_num <= 200000:  # Разумный диапазон цен
-                                                # Проверяем, нет ли уже такого размера
-                                                if not any(sp['size'] == size_text for sp in sizes_prices):
-                                                    sizes_prices.append({
-                                                        'size': size_text,
-                                                        'price': int(price_num * 100)  # в копейках
-                                                    })
-                                                    print(f"    ✅ Found size: {size_text}, price: {price_num} руб")
-                                        except:
-                                            pass
-                        if sizes_prices:
-                            break  # Если нашли размеры, прекращаем поиск
-            
-            # Если не нашли через селекторы, ищем по тексту страницы
-            if not sizes_prices:
-                print("  Trying to find sizes in page text...")
-                page_text = soup.get_text()
-                # Паттерн для размеров и цен: "39,5(40,5) 9 164 ₽"
-                size_price_pattern = re.compile(r'(\d+[,.]?\d*\s*\([^)]+\))\s+(\d+(?:\s+\d+)*)\s*[₽₴]')
-                matches = size_price_pattern.findall(page_text)
-                for match in matches[:20]:  # Максимум 20 размеров
-                    size_text = match[0].strip()
-                    price_text = match[1].strip().replace(' ', '')
+                # Проверяем количество меню (как в оригинальном коде)
+                check_count_menu = soup.select('div.SkuPanel_label__Vbp8t>span:nth-child(1)')
+                menu_count = len(check_count_menu)
+                
+                print(f"  Found {menu_count} menu(s) in SkuPanel")
+                
+                if menu_count == 1:
+                    # Одно меню: размеры и цены в nth-child(1)
                     try:
-                        price_num = float(price_text)
-                        sizes_prices.append({
-                            'size': size_text,
-                            'price': int(price_num * 100)
-                        })
-                        print(f"    Found size: {size_text}, price: {price_num} руб")
-                    except:
-                        pass
+                        size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
+                        price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                        
+                        if size_elements and price_elements:
+                            sizes = [elem.get_text(strip=True) for elem in size_elements]
+                            prices = [elem.get_text(strip=True).replace('₽', '').replace('P', '').replace('$', '').replace(' ', '') for elem in price_elements]
+                            
+                            for size, price_text in zip(sizes, prices):
+                                try:
+                                    # Пытаемся преобразовать цену в число
+                                    price_clean = price_text.replace(' ', '').replace(',', '').replace('₽', '').replace('P', '').replace('$', '')
+                                    if price_clean and price_clean != '-':
+                                        price_num = float(price_clean)
+                                        # Если цена меньше 1000, возможно это в юанях, умножаем на ~12.5
+                                        if price_num < 1000:
+                                            price_num = price_num * 12.5
+                                        price_cents = int(price_num * 100)  # в копейках
+                                        
+                                        sizes_prices.append({
+                                            'size': size,
+                                            'price': price_cents
+                                        })
+                                        print(f"    ✅ Found size: {size}, price: {price_cents} копеек")
+                                except Exception as e:
+                                    print(f"    ⚠️ Error parsing price for size {size}: {e}")
+                                    pass
+                    except Exception as e:
+                        print(f"  Error parsing sizes/prices with menu_count=1: {e}")
+                
+                elif menu_count == 2:
+                    # Два меню (цвет): размеры и цены в nth-child(2)
+                    try:
+                        size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(2) div.SkuPanel_value__BAJ1p')
+                        price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(2) div.SkuPanel_price__KCs7G')
+                        
+                        if size_elements and price_elements:
+                            sizes = [elem.get_text(strip=True) for elem in size_elements]
+                            prices = [elem.get_text(strip=True).replace('₽', '').replace('P', '').replace('$', '').replace(' ', '') for elem in price_elements]
+                            
+                            for size, price_text in zip(sizes, prices):
+                                try:
+                                    price_clean = price_text.replace(' ', '').replace(',', '').replace('₽', '').replace('P', '').replace('$', '')
+                                    if price_clean and price_clean != '-':
+                                        price_num = float(price_clean)
+                                        if price_num < 1000:
+                                            price_num = price_num * 12.5
+                                        price_cents = int(price_num * 100)
+                                        
+                                        sizes_prices.append({
+                                            'size': size,
+                                            'price': price_cents
+                                        })
+                                        print(f"    ✅ Found size: {size}, price: {price_cents} копеек")
+                                except Exception as e:
+                                    print(f"    ⚠️ Error parsing price for size {size}: {e}")
+                                    pass
+                    except Exception as e:
+                        print(f"  Error parsing sizes/prices with menu_count=2: {e}")
+                
+                elif menu_count == 3:
+                    # Три меню: размеры и цены в nth-child(3)
+                    try:
+                        size_element = soup.select_one('div.SkuPanel_group__egmoX:nth-child(3) div.SkuPanel_value__BAJ1p')
+                        price_element = soup.select_one('div.SkuPanel_group__egmoX:nth-child(3) div.SkuPanel_price__KCs7G')
+                        
+                        if size_element and price_element:
+                            size = size_element.get_text(strip=True)
+                            price_text = price_element.get_text(strip=True).replace('₽', '').replace('P', '').replace('$', '').replace(' ', '')
+                            
+                            try:
+                                price_clean = price_text.replace(' ', '').replace(',', '').replace('₽', '').replace('P', '').replace('$', '')
+                                if price_clean and price_clean != '-':
+                                    price_num = float(price_clean)
+                                    if price_num < 1000:
+                                        price_num = price_num * 12.5
+                                    price_cents = int(price_num * 100)
+                                    
+                                    sizes_prices.append({
+                                        'size': size,
+                                        'price': price_cents
+                                    })
+                                    print(f"    ✅ Found size: {size}, price: {price_cents} копеек")
+                            except Exception as e:
+                                print(f"    ⚠️ Error parsing price for size {size}: {e}")
+                                pass
+                    except Exception as e:
+                        print(f"  Error parsing sizes/prices with menu_count=3: {e}")
+                
+                # Если есть вкладки размеров (check_gender в оригинальном коде)
+                if not sizes_prices:
+                    try:
+                        size_buttons = soup.select('div.SkuPanel_tabItem__MuUkW')
+                        if size_buttons:
+                            print(f"  Found {len(size_buttons)} size tab(s), trying to parse from first tab...")
+                            # Берем первую вкладку
+                            size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
+                            price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                            
+                            if size_elements and price_elements:
+                                sizes = [elem.get_text(strip=True) for elem in size_elements]
+                                prices = [elem.get_text(strip=True).replace('₽', '').replace('P', '').replace('$', '').replace(' ', '') for elem in price_elements]
+                                
+                                for size, price_text in zip(sizes, prices):
+                                    try:
+                                        price_clean = price_text.replace(' ', '').replace(',', '').replace('₽', '').replace('P', '').replace('$', '')
+                                        if price_clean and price_clean != '-':
+                                            price_num = float(price_clean)
+                                            if price_num < 1000:
+                                                price_num = price_num * 12.5
+                                            price_cents = int(price_num * 100)
+                                            
+                                            if not any(sp['size'] == size for sp in sizes_prices):
+                                                sizes_prices.append({
+                                                    'size': size,
+                                                    'price': price_cents
+                                                })
+                                                print(f"    ✅ Found size: {size}, price: {price_cents} копеек")
+                                    except Exception as e:
+                                        pass
+                    except Exception as e:
+                        print(f"  Error parsing from size tabs: {e}")
             
             # Формируем описание из размеров и цен
             if sizes_prices:
