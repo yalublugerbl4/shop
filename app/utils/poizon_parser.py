@@ -142,14 +142,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                    product_data.get('goodsNameEn'))
                         
                             # Изображения (сохраняем как URL, потом скачаем)
-                            images_data = (product_data.get('images') or 
+                            images_data = (product_data.get('detailImageList') or  # В логах видели это поле!
+                                         product_data.get('images') or 
                                          product_data.get('imageList') or
                                          product_data.get('imageUrls') or
                                          product_data.get('spuImages') or
                                          product_data.get('mainImages') or
                                          product_data.get('detailImages') or
                                          product_data.get('goodsImages') or
-                                         product_data.get('goodsImageList'))
+                                         product_data.get('goodsImageList') or
+                                         product_data.get('sizeImageList'))
                         
                         if images_data:
                             if isinstance(images_data, list):
@@ -273,24 +275,101 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             # Отладочная информация о структуре первого SKU
                             if len(skus) > 0:
                                 print(f"  DEBUG: First SKU keys: {list(skus[0].keys())[:15]}")
+                                first_sku = skus[0]
+                                if 'properties' in first_sku:
+                                    print(f"  DEBUG: First SKU properties type: {type(first_sku['properties'])}")
+                                    if isinstance(first_sku['properties'], dict):
+                                        print(f"  DEBUG: First SKU properties keys: {list(first_sku['properties'].keys())[:10]}")
+                                    elif isinstance(first_sku['properties'], list):
+                                        print(f"  DEBUG: First SKU properties list length: {len(first_sku['properties'])}")
+                                        if len(first_sku['properties']) > 0:
+                                            print(f"  DEBUG: First property item: {first_sku['properties'][0]}")
+                            
+                            # Пробуем найти цены в product_data['price'] - возможно там массив цен по SKU
+                            price_list = None
+                            if 'price' in product_data:
+                                price_data = product_data['price']
+                                print(f"  DEBUG: price field type: {type(price_data)}")
+                                if isinstance(price_data, dict):
+                                    print(f"  DEBUG: price dict keys: {list(price_data.keys())[:10]}")
+                                    # Возможно, цены в price.skuList или price.priceList
+                                    price_list = (price_data.get('skuList') or 
+                                                 price_data.get('priceList') or
+                                                 price_data.get('list') or
+                                                 price_data.get('skus'))
+                                elif isinstance(price_data, list):
+                                    price_list = price_data
+                                    print(f"  DEBUG: price is a list with {len(price_list)} items")
                             
                             for idx, sku in enumerate(skus):
-                                size = (sku.get('size') or 
-                                       sku.get('sizeName') or 
-                                       sku.get('specValue') or
-                                       sku.get('sizeValue') or
-                                       sku.get('sizeText') or
-                                       sku.get('sizeLabel') or
-                                       sku.get('sizeNameCn') or
-                                       sku.get('sizeNameEn'))
+                                # Извлекаем размер из properties
+                                size = None
+                                properties = sku.get('properties')
+                                
+                                if isinstance(properties, dict):
+                                    # Размер может быть в разных ключах
+                                    size = (properties.get('size') or 
+                                           properties.get('sizeName') or
+                                           properties.get('specValue') or
+                                           properties.get('value') or
+                                           properties.get('specName') or
+                                           properties.get('propertyValue'))
+                                elif isinstance(properties, list):
+                                    # Если properties - массив, ищем элемент с размером
+                                    for prop in properties:
+                                        if isinstance(prop, dict):
+                                            # Проверяем разные варианты
+                                            size_candidate = (prop.get('size') or 
+                                                            prop.get('sizeName') or
+                                                            prop.get('specValue') or
+                                                            prop.get('value') or
+                                                            prop.get('propertyValue') or
+                                                            prop.get('specName'))
+                                            # Проверяем, что это похоже на размер (содержит цифры или стандартные обозначения размеров)
+                                            if size_candidate and (any(c.isdigit() for c in str(size_candidate)) or 
+                                                                   str(size_candidate).upper() in ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'] or
+                                                                   'US' in str(size_candidate).upper() or
+                                                                   'EU' in str(size_candidate).upper() or
+                                                                   'UK' in str(size_candidate).upper() or
+                                                                   'CN' in str(size_candidate).upper()):
+                                                size = size_candidate
+                                                break
+                                
+                                # Если не нашли размер в properties, пробуем другие поля
+                                if not size:
+                                    size = (sku.get('size') or 
+                                           sku.get('sizeName') or 
+                                           sku.get('specValue') or
+                                           sku.get('sizeValue') or
+                                           sku.get('sizeText') or
+                                           sku.get('skuTitle') or  # В логах видели это поле
+                                           sku.get('sizeLabel') or
+                                           sku.get('sizeNameCn') or
+                                           sku.get('sizeNameEn'))
+                                
+                                # Ищем цену для этого SKU
+                                price_value = None
+                                
+                                # Сначала пробуем найти цену в самом SKU
                                 price_value = (sku.get('price') or 
                                              sku.get('salePrice') or 
                                              sku.get('currentPrice') or
                                              sku.get('priceValue') or
-                                             sku.get('priceText') or
-                                             sku.get('priceLabel') or
                                              sku.get('lowPrice') or
                                              sku.get('highPrice'))
+                                
+                                # Если не нашли, пробуем найти в price_list по skuId
+                                if not price_value and price_list and isinstance(price_list, list):
+                                    sku_id = sku.get('skuId')
+                                    if sku_id:
+                                        for price_item in price_list:
+                                            if isinstance(price_item, dict):
+                                                if price_item.get('skuId') == sku_id:
+                                                    price_value = (price_item.get('price') or 
+                                                                 price_item.get('salePrice') or
+                                                                 price_item.get('currentPrice') or
+                                                                 price_item.get('priceValue'))
+                                                    break
                                 
                                 # Если не нашли напрямую, пробуем вложенные структуры
                                 if not price_value and isinstance(sku, dict):
@@ -381,20 +460,46 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         # Если цена не найдена из SKU, ищем основную цену
                         if not price:
-                            price_value = (product_data.get('price') or 
-                                         product_data.get('salePrice') or
-                                         product_data.get('currentPrice') or
-                                         product_data.get('lowPrice'))
+                            price_value = None
+                            price_data = product_data.get('price')
+                            
+                            # Если price - словарь, ищем цену внутри
+                            if isinstance(price_data, dict):
+                                price_value = (price_data.get('price') or 
+                                             price_data.get('salePrice') or
+                                             price_data.get('currentPrice') or
+                                             price_data.get('lowPrice') or
+                                             price_data.get('minPrice') or
+                                             price_data.get('maxPrice'))
+                            elif isinstance(price_data, (int, float)):
+                                price_value = price_data
+                            elif price_data is None:
+                                # Пробуем другие поля
+                                price_value = (product_data.get('salePrice') or
+                                             product_data.get('currentPrice') or
+                                             product_data.get('lowPrice'))
                             
                             if price_value:
                                 try:
                                     if isinstance(price_value, (int, float)):
-                                        price = int(price_value * 100) if price_value < 1000 else int(price_value)
+                                        # Проверяем разумность
+                                        if price_value > 100000:
+                                            print(f"  ⚠️ Main price too large ({price_value}), skipping")
+                                        elif price_value >= 1000:
+                                            price = int(price_value)  # Уже в копейках
+                                        else:
+                                            price = int(price_value * 100)
                                     else:
                                         price_str = str(price_value).replace(' ', '').replace(',', '')
                                         price_num = float(re.sub(r'[^\d.]', '', price_str))
-                                        price = int(price_num * 100) if price_num < 1000 else int(price_num)
-                                except:
+                                        if price_num > 100000:
+                                            print(f"  ⚠️ Main price too large ({price_num} руб), skipping")
+                                        elif price_num >= 1000:
+                                            price = int(price_num)
+                                        else:
+                                            price = int(price_num * 100)
+                                except Exception as e:
+                                    print(f"  ❌ Error parsing main price: {e}")
                                     pass
                         
                         print(f"Parsed from __NEXT_DATA__: title={bool(title)}, price={bool(price)}, images={len(images)}")
