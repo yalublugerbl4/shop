@@ -1,0 +1,168 @@
+from typing import Optional, List, Dict, Any
+from app.db.connection import get_db_connection
+
+
+def upsert_user(user_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Создать или обновить пользователя"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (tgid, username, first_name, last_name)
+                VALUES (%(tgid)s, %(username)s, %(first_name)s, %(last_name)s)
+                ON CONFLICT (tgid) 
+                DO UPDATE SET 
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name
+                RETURNING *
+                """,
+                {
+                    'tgid': user_data['tgid'],
+                    'username': user_data.get('username'),
+                    'first_name': user_data.get('first_name'),
+                    'last_name': user_data.get('last_name')
+                }
+            )
+            return dict(cur.fetchone())
+
+
+def get_user_by_tgid(tgid: int) -> Optional[Dict[str, Any]]:
+    """Получить пользователя по tgid"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT * FROM users WHERE tgid = %s', (tgid,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_products(
+    category: Optional[str] = None,
+    season: Optional[str] = None,
+    q: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Получить список товаров с фильтрацией"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            query = 'SELECT * FROM products WHERE is_active = true'
+            params = []
+            
+            if category:
+                query += ' AND category = %s'
+                params.append(category)
+            
+            if season:
+                query += ' AND season = %s'
+                params.append(season)
+            
+            if q:
+                query += ' AND (title ILIKE %s OR description ILIKE %s)'
+                search_term = f'%{q}%'
+                params.extend([search_term, search_term])
+            
+            query += ' ORDER BY created_at DESC'
+            
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
+
+
+def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
+    """Получить товар по ID"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT * FROM products WHERE id = %s AND is_active = true',
+                (product_id,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Создать товар"""
+    import json
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO products (category, season, title, description, price_cents, images_base64)
+                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s)
+                RETURNING *
+                """,
+                {
+                    'category': product_data['category'],
+                    'season': product_data.get('season'),
+                    'title': product_data['title'],
+                    'description': product_data.get('description', ''),
+                    'price_cents': product_data['price_cents'],
+                    'images_base64': json.dumps(product_data.get('images_base64', []))
+                }
+            )
+            row = cur.fetchone()
+            result = dict(row)
+            # Парсим JSON обратно
+            if isinstance(result.get('images_base64'), str):
+                result['images_base64'] = json.loads(result['images_base64'])
+            return result
+
+
+def update_product(
+    product_id: str,
+    updates: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Обновить товар"""
+    import json
+    if not updates:
+        return get_product_by_id(product_id)
+    
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Используем параметризованный запрос правильно
+            placeholders = []
+            params = []
+            
+            if 'category' in updates:
+                placeholders.append('category = %s')
+                params.append(updates['category'])
+            if 'season' in updates:
+                placeholders.append('season = %s')
+                params.append(updates.get('season'))
+            if 'title' in updates:
+                placeholders.append('title = %s')
+                params.append(updates['title'])
+            if 'description' in updates:
+                placeholders.append('description = %s')
+                params.append(updates['description'])
+            if 'price_cents' in updates:
+                placeholders.append('price_cents = %s')
+                params.append(updates['price_cents'])
+            if 'images_base64' in updates:
+                placeholders.append('images_base64 = %s')
+                params.append(json.dumps(updates['images_base64']))
+            
+            if not placeholders:
+                return get_product_by_id(product_id)
+            
+            params.append(product_id)
+            query = f'UPDATE products SET {", ".join(placeholders)} WHERE id = %s RETURNING *'
+            
+            cur.execute(query, params)
+            row = cur.fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            if isinstance(result.get('images_base64'), str):
+                result['images_base64'] = json.loads(result['images_base64'])
+            return result
+
+
+def delete_product(product_id: str) -> bool:
+    """Удалить товар (soft delete)"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                'UPDATE products SET is_active = false WHERE id = %s',
+                (product_id,)
+            )
+            return cur.rowcount > 0
