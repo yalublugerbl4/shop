@@ -304,24 +304,51 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 print(f"  DEBUG: baseProperties type: {type(base_props)}")
                                 if isinstance(base_props, list):
                                     print(f"  DEBUG: baseProperties list length: {len(base_props)}")
-                                    for prop_group in base_props:
+                                    # Выводим все группы для анализа
+                                    for idx, prop_group in enumerate(base_props):
                                         if isinstance(prop_group, dict):
-                                            # Ищем группу с размерами (обычно propertyName содержит 'size' или 'Size')
-                                            prop_name = prop_group.get('propertyName') or prop_group.get('name') or ''
-                                            if 'size' in str(prop_name).lower():
+                                            prop_name = prop_group.get('propertyName') or prop_group.get('name') or prop_group.get('propertyType') or ''
+                                            print(f"    baseProperties[{idx}]: propertyName='{prop_name}', keys={list(prop_group.keys())[:10]}")
+                                            
+                                            # Ищем группу с размерами (может быть 'размер', 'Size', 'size', 'RU', 'EU' и т.д.)
+                                            prop_name_lower = str(prop_name).lower()
+                                            if any(keyword in prop_name_lower for keyword in ['size', 'размер', 'разм']):
+                                                print(f"      ✅ Found size group: '{prop_name}'")
                                                 # В values могут быть размеры
-                                                values = prop_group.get('values') or prop_group.get('propertyValues') or []
+                                                values = prop_group.get('values') or prop_group.get('propertyValues') or prop_group.get('propertyValueList') or []
                                                 if isinstance(values, list):
+                                                    print(f"        Found {len(values)} size values")
                                                     for val in values:
                                                         if isinstance(val, dict):
-                                                            value_id = val.get('propertyValueId') or val.get('id')
-                                                            value_text = val.get('propertyValue') or val.get('value') or val.get('name') or val.get('text')
+                                                            value_id = val.get('propertyValueId') or val.get('id') or val.get('propertyValueId')
+                                                            value_text = val.get('propertyValue') or val.get('value') or val.get('name') or val.get('text') or val.get('propertyValueText')
                                                             if value_id and value_text:
                                                                 size_mapping[value_id] = value_text
-                                                                print(f"    Mapped size: {value_id} -> {value_text}")
+                                                                print(f"          Mapped size: {value_id} -> {value_text}")
                                                 break  # Нашли группу размеров
+                                            
+                                            # Если не нашли по имени, пробуем все группы
+                                            values = prop_group.get('values') or prop_group.get('propertyValues') or []
+                                            if isinstance(values, list) and len(values) > 0:
+                                                # Проверяем, похожи ли значения на размеры (содержат числа)
+                                                first_val = values[0]
+                                                if isinstance(first_val, dict):
+                                                    val_text = str(first_val.get('propertyValue') or first_val.get('value') or first_val.get('name') or '')
+                                                    # Если значение похоже на размер (содержит числа и возможно запятую/точку)
+                                                    if re.search(r'\d+[,.]?\d*', val_text):
+                                                        print(f"      🔍 Possible size group found (by value pattern): '{prop_name}'")
+                                                        for val in values:
+                                                            if isinstance(val, dict):
+                                                                value_id = val.get('propertyValueId') or val.get('id')
+                                                                value_text = val.get('propertyValue') or val.get('value') or val.get('name') or val.get('text')
+                                                                if value_id and value_text:
+                                                                    size_mapping[value_id] = value_text
+                                                                    print(f"          Mapped size: {value_id} -> {value_text}")
+                                                        if size_mapping:
+                                                            break  # Нашли и заполнили маппинг
                                 elif isinstance(base_props, dict):
                                     # Если baseProperties - словарь, пробуем найти внутри
+                                    print(f"  DEBUG: baseProperties is dict, keys: {list(base_props.keys())[:10]}")
                                     for key, value in base_props.items():
                                         if isinstance(value, list):
                                             for item in value:
@@ -331,7 +358,21 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     if value_id and value_text:
                                                         size_mapping[value_id] = value_text
                             
-                            # Пробуем найти цены в product_data['price'] - возможно там массив цен по SKU
+                            # Пробуем найти цены для каждого SKU - возможно, цены в каждом SKU или в отдельном массиве
+                            sku_price_mapping = {}  # skuId -> price
+                            
+                            # Сначала ищем цены в каждом SKU
+                            for sku in skus:
+                                sku_id = sku.get('skuId')
+                                # Ищем цену в самом SKU
+                                sku_price = (sku.get('price') or 
+                                            sku.get('salePrice') or 
+                                            sku.get('currentPrice') or
+                                            sku.get('priceValue'))
+                                if sku_price and sku_id:
+                                    sku_price_mapping[sku_id] = sku_price
+                            
+                            # Также пробуем найти массив цен в product_data
                             price_list = None
                             base_price_money = None
                             if 'price' in product_data:
@@ -343,15 +384,39 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     base_price_money = price_data.get('money')  # Общая цена в центах/копейках
                                     if base_price_money:
                                         print(f"  DEBUG: Found base price money: {base_price_money}")
+                                        # Если money - словарь, берем minUnitVal
+                                        if isinstance(base_price_money, dict):
+                                            base_price_money = base_price_money.get('minUnitVal') or base_price_money.get('amount')
+                                    
+                                    # Ищем список цен по SKU
                                     price_list = (price_data.get('skuList') or 
                                                  price_data.get('priceList') or
                                                  price_data.get('list') or
-                                                 price_data.get('skus'))
+                                                 price_data.get('skus') or
+                                                 price_data.get('skuPrices'))
+                                    
+                                    # Если есть массив цен, строим маппинг
+                                    if price_list and isinstance(price_list, list):
+                                        print(f"  DEBUG: Found price_list with {len(price_list)} items")
+                                        for price_item in price_list:
+                                            if isinstance(price_item, dict):
+                                                item_sku_id = price_item.get('skuId') or price_item.get('id')
+                                                item_price = (price_item.get('money') or 
+                                                            price_item.get('price') or 
+                                                            price_item.get('salePrice') or
+                                                            price_item.get('currentPrice') or
+                                                            price_item.get('priceValue'))
+                                                if item_price and item_sku_id:
+                                                    # Если price - словарь с minUnitVal
+                                                    if isinstance(item_price, dict):
+                                                        item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                    sku_price_mapping[item_sku_id] = item_price
                                 elif isinstance(price_data, list):
                                     price_list = price_data
                                     print(f"  DEBUG: price is a list with {len(price_list)} items")
                             
                             print(f"  DEBUG: Size mapping has {len(size_mapping)} entries")
+                            print(f"  DEBUG: SKU price mapping has {len(sku_price_mapping)} entries")
                             if not size_mapping:
                                 print(f"  ⚠️ No size mapping found in baseProperties, trying alternative approach...")
                             
@@ -371,23 +436,17 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     size = size_mapping[property_value_id]
                                                     print(f"    SKU {idx+1}: Found size via mapping {property_value_id} -> {size}")
                                                     break
-                                                else:
-                                                    # Если маппинга нет, пробуем прямое значение
-                                                    size_candidate = (prop.get('propertyValue') or 
-                                                                    prop.get('value') or 
-                                                                    prop.get('name') or
-                                                                    prop.get('text'))
-                                                    if size_candidate:
-                                                        size = size_candidate
-                                                        break
-                                elif isinstance(properties, dict):
-                                    # Размер может быть в разных ключах
-                                    size = (properties.get('size') or 
-                                           properties.get('sizeName') or
-                                           properties.get('specValue') or
-                                           properties.get('value') or
-                                           properties.get('specName') or
-                                           properties.get('propertyValue'))
+                                
+                                # Если не нашли через маппинг, пробуем извлечь из skuTitle (но только число размера)
+                                if not size:
+                                    sku_title = sku.get('skuTitle') or ''
+                                    # Ищем паттерн размера в конце названия (число с запятой/точкой)
+                                    if sku_title:
+                                        # Ищем паттерн типа "43,5" или "43.5" в конце строки
+                                        size_match = re.search(r'(\d+[,.]?\d*)\s*$', sku_title.strip())
+                                        if size_match:
+                                            size = size_match.group(1).replace(',', ',')  # Оставляем запятую как есть
+                                            print(f"    SKU {idx+1}: Extracted size from skuTitle: '{size}'")
                                 
                                 # Если не нашли размер в properties, пробуем другие поля
                                 if not size:
@@ -396,41 +455,61 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                            sku.get('specValue') or
                                            sku.get('sizeValue') or
                                            sku.get('sizeText') or
-                                           sku.get('skuTitle') or  # В логах видели это поле
                                            sku.get('sizeLabel') or
                                            sku.get('sizeNameCn') or
                                            sku.get('sizeNameEn'))
                                 
+                                # Если размер все еще содержит название товара, извлекаем только числовую часть
+                                if size and len(size) > 10:
+                                    # Пробуем найти число в конце
+                                    size_match = re.search(r'(\d+[,.]?\d*)\s*$', size.strip())
+                                    if size_match:
+                                        size = size_match.group(1).replace(',', ',')
+                                        print(f"    SKU {idx+1}: Cleaned size to: '{size}'")
+                                
                                 # Ищем цену для этого SKU
                                 price_value = None
+                                sku_id = sku.get('skuId')
                                 
-                                # Сначала пробуем найти цену в самом SKU
-                                price_value = (sku.get('price') or 
-                                             sku.get('salePrice') or 
-                                             sku.get('currentPrice') or
-                                             sku.get('priceValue') or
-                                             sku.get('lowPrice') or
-                                             sku.get('highPrice'))
-                                
-                                # Если не нашли, пробуем найти в price_list по skuId
-                                if not price_value and price_list and isinstance(price_list, list):
-                                    sku_id = sku.get('skuId')
-                                    if sku_id:
+                                # Сначала пробуем найти цену в маппинге цен по SKU
+                                if sku_id and sku_id in sku_price_mapping:
+                                    price_value = sku_price_mapping[sku_id]
+                                    print(f"    SKU {idx+1}: Found price in mapping: {price_value}")
+                                else:
+                                    # Пробуем найти цену в самом SKU
+                                    price_value = (sku.get('price') or 
+                                                 sku.get('salePrice') or 
+                                                 sku.get('currentPrice') or
+                                                 sku.get('priceValue') or
+                                                 sku.get('lowPrice') or
+                                                 sku.get('highPrice'))
+                                    
+                                    # Если price - словарь с money/minUnitVal
+                                    if isinstance(price_value, dict):
+                                        price_value = price_value.get('minUnitVal') or price_value.get('amount')
+                                    
+                                    # Если не нашли, пробуем найти в price_list по skuId
+                                    if not price_value and price_list and isinstance(price_list, list) and sku_id:
                                         for price_item in price_list:
                                             if isinstance(price_item, dict):
-                                                if price_item.get('skuId') == sku_id:
+                                                if price_item.get('skuId') == sku_id or price_item.get('id') == sku_id:
                                                     # Цена может быть в price_item.money или напрямую
                                                     price_value = (price_item.get('money') or
                                                                  price_item.get('price') or 
                                                                  price_item.get('salePrice') or
                                                                  price_item.get('currentPrice') or
                                                                  price_item.get('priceValue'))
+                                                    # Если price - словарь
+                                                    if isinstance(price_value, dict):
+                                                        price_value = price_value.get('minUnitVal') or price_value.get('amount')
+                                                    if price_value:
+                                                        print(f"    SKU {idx+1}: Found price in price_list: {price_value}")
                                                     break
                                 
-                                # Если не нашли, используем базовую цену (для всех размеров одинаковая)
+                                # Если не нашли индивидуальную цену, используем базовую цену (для всех размеров одинаковая)
                                 if not price_value and base_price_money is not None:
                                     price_value = base_price_money
-                                    print(f"    SKU {idx+1}: Using base price {price_value}")
+                                    print(f"    SKU {idx+1}: Using base price {price_value} (no individual price found)")
                                 
                                 # Если не нашли напрямую, пробуем вложенные структуры
                                 if not price_value and isinstance(sku, dict):
