@@ -155,46 +155,79 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         print(f"Found {len(images)} image URLs from __NEXT_DATA__ (skipped first)")
                         
                         # SKU данные (размеры и цены) - более глубокий поиск
-                        skus = (product_data.get('skus') or 
-                              product_data.get('skuList') or
-                              product_data.get('skuInfos') or
-                              product_data.get('skuData') or
-                              product_data.get('priceList') or
-                              product_data.get('sizeList') or
-                              product_data.get('sizePriceList') or
-                              product_data.get('sizes') or
-                              product_data.get('sizeInfos') or
-                              product_data.get('goodsSkuList') or
-                              product_data.get('skuInfosList'))
+                        # Пробуем разные пути в структуре данных
+                        skus = None
                         
-                        # Если не нашли напрямую, пробуем поискать глубже
+                        # Сначала ищем напрямую
+                        for key in ['skus', 'skuList', 'skuInfos', 'skuData', 'priceList', 'sizeList', 
+                                   'sizePriceList', 'sizes', 'sizeInfos', 'goodsSkuList', 'skuInfosList',
+                                   'skuListData', 'sizePriceData', 'variants', 'variations']:
+                            if key in product_data:
+                                skus = product_data[key]
+                                print(f"  Found SKUs in product_data['{key}']")
+                                break
+                        
+                        # Если не нашли напрямую, пробуем поискать глубже во вложенных структурах
                         if not skus:
-                            # Пробуем в data.goodsDetail или подобных структурах
-                            nested_data = (product_data.get('data', {}) or
-                                         product_data.get('goodsDetail', {}) or
-                                         product_data.get('detail', {}))
-                            if isinstance(nested_data, dict):
-                                skus = (nested_data.get('skus') or 
-                                      nested_data.get('skuList') or
-                                      nested_data.get('skuInfos') or
-                                      nested_data.get('sizeList'))
+                            print("  SKUs not found directly, searching in nested structures...")
+                            nested_keys = ['data', 'goodsDetail', 'detail', 'goods', 'productInfo', 'spuInfo', 'goodsInfo']
+                            for nested_key in nested_keys:
+                                nested_data = product_data.get(nested_key)
+                                if isinstance(nested_data, dict):
+                                    for key in ['skus', 'skuList', 'skuInfos', 'sizeList', 'skuData']:
+                                        if key in nested_data:
+                                            skus = nested_data[key]
+                                            print(f"  Found SKUs in product_data['{nested_key}']['{key}']")
+                                            break
+                                    if skus:
+                                        break
                         
                         # Также пробуем поискать в массивах внутри product_data
                         if not skus:
+                            print("  Searching in arrays within product_data...")
                             for key, value in product_data.items():
                                 if isinstance(value, list) and len(value) > 0:
-                                    # Проверяем, похоже ли это на список SKU (первый элемент имеет size/price)
                                     first_item = value[0]
                                     if isinstance(first_item, dict):
-                                        if any(k in first_item for k in ['size', 'sizeName', 'specValue']):
-                                            if any(k in first_item for k in ['price', 'salePrice', 'currentPrice']):
-                                                skus = value
-                                                print(f"Found SKUs in nested array: {key}")
-                                                break
+                                        has_size = any(k in first_item for k in ['size', 'sizeName', 'specValue', 'sizeValue', 'sizeText'])
+                                        has_price = any(k in first_item for k in ['price', 'salePrice', 'currentPrice', 'priceValue'])
+                                        if has_size and has_price:
+                                            skus = value
+                                            print(f"  Found SKUs in array: product_data['{key}']")
+                                            break
                         
-                        if skus and isinstance(skus, list):
+                        # Пробуем найти в __NEXT_DATA__ через другой путь - через queries/dehydratedState
+                        if not skus and dehydrated_state:
+                            print("  Searching in dehydratedState queries...")
+                            queries = dehydrated_state.get('queries', [])
+                            for query in queries:
+                                state_data = query.get('state', {}).get('data', {})
+                                if isinstance(state_data, dict):
+                                    # Ищем SKU данные в разных местах
+                                    for path in [
+                                        lambda d: d.get('skuList'),
+                                        lambda d: d.get('skus'),
+                                        lambda d: d.get('data', {}).get('skuList'),
+                                        lambda d: d.get('data', {}).get('skus'),
+                                        lambda d: d.get('goodsDetail', {}).get('skuList'),
+                                        lambda d: d.get('goodsDetail', {}).get('skus'),
+                                    ]:
+                                        result = path(state_data)
+                                        if result:
+                                            skus = result
+                                            print(f"  Found SKUs in dehydratedState.queries")
+                                            break
+                                    if skus:
+                                        break
+                        
+                        if skus and isinstance(skus, list) and len(skus) > 0:
                             sizes_prices = []
-                            print(f"Processing {len(skus)} SKU items...")
+                            print(f"  ✅ Processing {len(skus)} SKU items from __NEXT_DATA__...")
+                            
+                            # Отладочная информация о структуре первого SKU
+                            if len(skus) > 0:
+                                print(f"  DEBUG: First SKU keys: {list(skus[0].keys())[:15]}")
+                            
                             for idx, sku in enumerate(skus):
                                 size = (sku.get('size') or 
                                        sku.get('sizeName') or 
