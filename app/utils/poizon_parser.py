@@ -69,49 +69,75 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             images = []
             description = ""
             
-            # Поиск названия товара
-            # Варианты селекторов для thepoizon.ru
-            title_selectors = [
-                'h1.product-title',
-                'h1.goods-title',
-                '.product-name',
-                '.goods-name',
-                '.product__title',
-                '.product-title',
-                '.title',
-                'h1[class*="product"]',
-                'h1[class*="title"]',
-                'h1',
-                '[class*="title"][class*="product"]',
-                '[class*="name"]',
-                'title'
-            ]
+            # Поиск названия товара (оригинальное, без перевода)
+            # Сначала ищем в мета-тегах - там обычно оригинальное название
+            title = None
             
-            for selector in title_selectors:
-                title_elem = soup.select_one(selector)
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-                    if title and len(title) > 5:
-                        print(f"Found title with selector '{selector}': {title[:50]}...")
-                        break
+            # Ищем оригинальное название в JSON-LD
+            json_ld_scripts = soup.find_all('script', type='application/ld+json')
+            for json_ld in json_ld_scripts:
+                try:
+                    import json
+                    data = json.loads(json_ld.string)
+                    if isinstance(data, list) and len(data) > 0:
+                        data = data[0]
+                    
+                    if isinstance(data, dict):
+                        # Ищем название в JSON-LD (там обычно оригинальное)
+                        if 'name' in data:
+                            title = data['name']
+                            print(f"Found title from JSON-LD name: {title[:50]}...")
+                            break
+                        elif 'alternateName' in data:
+                            title = data['alternateName']
+                            print(f"Found title from JSON-LD alternateName: {title[:50]}...")
+                            break
+                except:
+                    pass
             
-            # Если не нашли через селекторы, ищем в мета-тегах
+            # Если не нашли в JSON-LD, ищем в мета-тегах
             if not title:
                 meta_title = soup.find('meta', property='og:title')
                 if meta_title:
                     title = meta_title.get('content', '').strip()
-                    print(f"Found title from meta: {title[:50]}...")
+                    print(f"Found title from og:title: {title[:50]}...")
+            
+            # Если не нашли, ищем в data-атрибутах
+            if not title:
+                # Ищем элементы с data-name или data-product-name
+                title_elem = soup.select_one('[data-name], [data-product-name], [data-title]')
+                if title_elem:
+                    title = title_elem.get('data-name') or title_elem.get('data-product-name') or title_elem.get('data-title')
+                    if title:
+                        print(f"Found title from data-attribute: {title[:50]}...")
+            
+            # В последнюю очередь пробуем селекторы (но предпочитаем английские названия)
+            if not title:
+                title_selectors = [
+                    'h1.product-title',
+                    'h1.goods-title',
+                    '.product-name',
+                    '.goods-name',
+                    '.product__title',
+                    '.product-title',
+                    'h1[class*="product"]',
+                    'h1'
+                ]
                 
-                # Пробуем из тега title
-                if not title:
-                    title_tag = soup.find('title')
-                    if title_tag:
-                        title = title_tag.get_text(strip=True)
-                        # Убираем стандартные суффиксы сайта
-                        title = re.sub(r'\s*[-|]\s*thepoizon.*$', '', title, flags=re.IGNORECASE)
-                        title = re.sub(r'\s*[-|]\s*POIZON.*$', '', title, flags=re.IGNORECASE)
-                        title = re.sub(r'\s*[-|]\s*得物.*$', '', title, flags=re.IGNORECASE)
-                        print(f"Found title from <title> tag: {title[:50]}...")
+                for selector in title_selectors:
+                    title_elem = soup.select_one(selector)
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
+                        if title and len(title) > 5:
+                            print(f"Found title with selector '{selector}': {title[:50]}...")
+                            break
+            
+            # Очистка названия от суффиксов сайта
+            if title:
+                title = re.sub(r'\s*[-|]\s*thepoizon.*$', '', title, flags=re.IGNORECASE)
+                title = re.sub(r'\s*[-|]\s*POIZON.*$', '', title, flags=re.IGNORECASE)
+                title = re.sub(r'\s*[-|]\s*得物.*$', '', title, flags=re.IGNORECASE)
+                title = title.strip()
             
             # Поиск цены
             price_selectors = [
@@ -241,81 +267,123 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     if price:
                         break
             
-            # Поиск изображений
-            # Сначала пробуем найти основные изображения товара
-            img_selectors = [
-                '.product-gallery img',
-                '.product-images img',
-                '.product-image img',
-                '.goods-image img',
-                '.product__image img',
-                '.swiper-slide img',
-                '.slider img',
-                '[class*="gallery"] img',
-                '[class*="product"] img[src*="http"]',
-                '[class*="goods"] img[src*="http"]',
-                'img[src*="goods"]',
-                'img[src*="product"]',
-                'img[alt*="product"]'
-            ]
+            # Поиск изображений (галерея товара, первые 3 оригинальные фото)
+            found_urls = []
             
-            found_urls = set()
-            for selector in img_selectors:
-                img_tags = soup.select(selector)
-                for img in img_tags[:5]:  # максимум 5 для выбора лучших
-                    img_url = img.get('src') or img.get('data-src') or img.get('data-original') or img.get('data-lazy') or img.get('data-url')
-                    if img_url:
-                        if img_url.startswith('//'):
-                            img_url = 'https:' + img_url
-                        elif img_url.startswith('/'):
-                            img_url = base_domain + img_url
-                        if img_url.startswith('http') and img_url not in found_urls:
-                            found_urls.add(img_url)
+            # Сначала ищем в JSON-LD - там могут быть ссылки на оригинальные изображения
+            for json_ld in json_ld_scripts:
+                try:
+                    import json
+                    data = json.loads(json_ld.string)
+                    if isinstance(data, list) and len(data) > 0:
+                        data = data[0]
+                    
+                    if isinstance(data, dict):
+                        # Ищем image (может быть строкой или массивом)
+                        if 'image' in data:
+                            img_data = data['image']
+                            if isinstance(img_data, list):
+                                for img in img_data[:3]:
+                                    if isinstance(img, str) and img not in found_urls:
+                                        found_urls.append(img)
+                                    elif isinstance(img, dict) and 'url' in img and img['url'] not in found_urls:
+                                        found_urls.append(img['url'])
+                            elif isinstance(img_data, str) and img_data not in found_urls:
+                                found_urls.append(img_data)
+                            
+                            if len(found_urls) >= 3:
+                                break
+                except:
+                    pass
             
-            # Также проверяем Open Graph изображение
-            og_image = soup.find('meta', property='og:image')
-            if og_image:
-                img_url = og_image.get('content', '').strip()
-                if img_url and img_url not in found_urls:
-                    if img_url.startswith('//'):
-                        img_url = 'https:' + img_url
-                    elif img_url.startswith('/'):
-                        img_url = base_domain + img_url
-                    found_urls.add(img_url)
+            # Если не нашли в JSON-LD, ищем в галерее товара
+            if len(found_urls) < 3:
+                # Селекторы для галереи товара (не главное изображение, а именно галерея)
+                gallery_selectors = [
+                    '.product-gallery img',
+                    '.product-images img',
+                    '.gallery-item img',
+                    '.swiper-slide img',
+                    '.slider-item img',
+                    '.product-photos img',
+                    '[class*="gallery"] [class*="item"] img',
+                    '[class*="thumb"] img',
+                    '.product-thumbnails img'
+                ]
+                
+                for selector in gallery_selectors:
+                    img_tags = soup.select(selector)
+                    for img in img_tags:
+                        # Ищем оригинальные изображения (не миниатюры)
+                        img_url = None
+                        
+                        # Проверяем data-атрибуты для оригинальных изображений
+                        img_url = (img.get('data-original') or 
+                                  img.get('data-src-large') or 
+                                  img.get('data-full') or
+                                  img.get('data-url') or
+                                  img.get('data-original-src') or
+                                  img.get('src'))
+                        
+                        # Пропускаем миниатюры (обычно содержат 'thumb' или очень маленькие URL)
+                        if img_url:
+                            # Пропускаем миниатюры и иконки
+                            if 'thumb' in img_url.lower() or 'icon' in img_url.lower() or 'placeholder' in img_url.lower():
+                                continue
+                            
+                            # Нормализуем URL
+                            if img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+                            elif img_url.startswith('/'):
+                                img_url = base_domain + img_url
+                            
+                            if img_url.startswith('http') and img_url not in found_urls:
+                                found_urls.append(img_url)
+                                if len(found_urls) >= 3:
+                                    break
+                    
+                    if len(found_urls) >= 3:
+                        break
+            
+            # Если все еще не нашли достаточно, ищем любые изображения товара (но не главное)
+            if len(found_urls) < 3:
+                product_img_selectors = [
+                    '.product-image:not(:first-child) img',
+                    '.product__image:not(:first-child) img',
+                    '[class*="product"]:not(:first-child) img[src*="http"]'
+                ]
+                
+                for selector in product_img_selectors:
+                    img_tags = soup.select(selector)
+                    for img in img_tags:
+                        img_url = img.get('data-src') or img.get('data-original') or img.get('src')
+                        if img_url:
+                            if img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+                            elif img_url.startswith('/'):
+                                img_url = base_domain + img_url
+                            
+                            if img_url.startswith('http') and img_url not in found_urls:
+                                found_urls.append(img_url)
+                                if len(found_urls) >= 3:
+                                    break
+                    if len(found_urls) >= 3:
+                        break
             
             print(f"Found {len(found_urls)} image URLs")
             
-            # Скачиваем и конвертируем изображения (максимум 3)
-            for img_url in list(found_urls)[:3]:
+            # Скачиваем и конвертируем изображения (первые 3)
+            for img_url in found_urls[:3]:
                 img_base64 = await download_image_to_base64(img_url, client)
                 if img_base64:
                     images.append(img_base64)
+                    if len(images) >= 3:
+                        break
             
             print(f"Downloaded {len(images)} images")
             
-            # Описание
-            desc_selectors = [
-                '.product-description',
-                '.goods-description',
-                '.product-detail',
-                '[class*="description"]',
-                '[class*="detail"]'
-            ]
-            
-            for selector in desc_selectors:
-                desc_elem = soup.select_one(selector)
-                if desc_elem:
-                    description = desc_elem.get_text(strip=True, separator='\n')
-                    if description and len(description) > 10:
-                        print(f"Found description with selector '{selector}'")
-                        break
-            
-            # Если не нашли описание, используем мета-описание
-            if not description:
-                meta_desc = soup.find('meta', property='og:description')
-                if meta_desc:
-                    description = meta_desc.get('content', '').strip()
-                    print("Found description from meta")
+            # Описание не нужно - оставляем пустым
+            description = ""
             
             if not title:
                 raise Exception("Не удалось найти название товара. Возможно, структура страницы изменилась или товар недоступен.")
