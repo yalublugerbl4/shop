@@ -77,9 +77,14 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 try:
                     import json
                     next_data = json.loads(next_data_script.string)
-                    print("Found __NEXT_DATA__ script with product data")
+                    print("✅ Found __NEXT_DATA__ script with product data")
+                    print(f"  __NEXT_DATA__ keys: {list(next_data.keys())[:10]}")
                 except Exception as e:
-                    print(f"Error parsing __NEXT_DATA__: {e}")
+                    print(f"❌ Error parsing __NEXT_DATA__: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("⚠️ __NEXT_DATA__ script not found in HTML!")
             
             # Если нашли __NEXT_DATA__, используем данные оттуда
             if next_data:
@@ -113,7 +118,12 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     break
                     
                     if product_data:
-                        print("Found product data in __NEXT_DATA__")
+                        print(f"✅ Found product_data in __NEXT_DATA__")
+                        print(f"  product_data type: {type(product_data)}")
+                        print(f"  product_data keys (first 30): {list(product_data.keys())[:30]}")
+                    else:
+                        print("⚠️ product_data not found in __NEXT_DATA__")
+                        print(f"  pageProps keys: {list(page_props.keys())[:20]}")
                         
                         # Название
                         title = (product_data.get('title') or 
@@ -298,7 +308,40 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 if skus and len(skus) > 0:
                                     print(f"  First SKU structure (keys): {list(skus[0].keys())[:10]}")
                         else:
-                            print(f"⚠️ No SKUs found in product_data. Available keys: {list(product_data.keys())[:20]}")
+                            print(f"⚠️ No SKUs found in product_data")
+                            print(f"    Available top-level keys ({len(product_data.keys())}): {list(product_data.keys())[:50]}")
+                            
+                            # Детальный анализ структуры
+                            try:
+                                import json
+                                # Ищем любые массивы в product_data
+                                arrays_found = []
+                                for key, value in product_data.items():
+                                    if isinstance(value, list) and len(value) > 0:
+                                        arrays_found.append((key, len(value)))
+                                        print(f"    Found array '{key}' with {len(value)} items")
+                                        if isinstance(value[0], dict):
+                                            print(f"      First item keys: {list(value[0].keys())[:20]}")
+                                
+                                if not arrays_found:
+                                    print(f"    ⚠️ No arrays found in product_data!")
+                                
+                                # Ищем ключи, связанные с размерами/ценами
+                                size_related_keys = [k for k in product_data.keys() if any(word in str(k).lower() for word in ['size', 'sku', 'price', 'variant', 'spec'])]
+                                if size_related_keys:
+                                    print(f"    🔍 Size/SKU/Price related keys: {size_related_keys}")
+                                    # Показываем содержимое этих ключей
+                                    for key in size_related_keys[:5]:
+                                        value = product_data[key]
+                                        print(f"      {key}: {type(value).__name__}, value preview: {str(value)[:200]}")
+                                
+                                # Показываем структуру для анализа
+                                sample = json.dumps(product_data, default=str, indent=2, ensure_ascii=False)[:3000]
+                                print(f"    Product data structure (first 3000 chars):\n{sample}")
+                            except Exception as e:
+                                print(f"    ❌ Error analyzing structure: {e}")
+                                import traceback
+                                traceback.print_exc()
                         
                         # Если цена не найдена из SKU, ищем основную цену
                         if not price:
