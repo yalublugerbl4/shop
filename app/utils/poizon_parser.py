@@ -111,7 +111,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         if images_data:
                             if isinstance(images_data, list):
-                                for img in images_data[:10]:
+                                # Пропускаем первое изображение (обычно это подошва/стопа)
+                                for img in images_data[1:11]:  # Пропускаем первый, берем следующие 10
                                     img_url = None
                                     if isinstance(img, str):
                                         img_url = img
@@ -128,21 +129,35 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         if img_url.startswith('http') and img_url not in images:
                                             images.append(img_url)  # Пока сохраняем как URL
                             elif isinstance(images_data, str):
-                                if images_data.startswith('http') and images_data not in images:
-                                    images.append(images_data)
+                                # Если одно изображение, тоже пропускаем
+                                pass
                         
-                        print(f"Found {len(images)} image URLs from __NEXT_DATA__")
+                        print(f"Found {len(images)} image URLs from __NEXT_DATA__ (skipped first)")
                         
                         # SKU данные (размеры и цены)
                         skus = (product_data.get('skus') or 
                               product_data.get('skuList') or
-                              product_data.get('skuInfos'))
+                              product_data.get('skuInfos') or
+                              product_data.get('skuData') or
+                              product_data.get('priceList') or
+                              product_data.get('sizeList') or
+                              product_data.get('sizePriceList'))
                         
                         if skus and isinstance(skus, list):
                             sizes_prices = []
                             for sku in skus:
-                                size = sku.get('size') or sku.get('sizeName') or sku.get('specValue')
-                                price_value = sku.get('price') or sku.get('salePrice') or sku.get('currentPrice')
+                                size = (sku.get('size') or 
+                                       sku.get('sizeName') or 
+                                       sku.get('specValue') or
+                                       sku.get('sizeValue') or
+                                       sku.get('sizeText') or
+                                       sku.get('sizeLabel'))
+                                price_value = (sku.get('price') or 
+                                             sku.get('salePrice') or 
+                                             sku.get('currentPrice') or
+                                             sku.get('priceValue') or
+                                             sku.get('priceText') or
+                                             sku.get('priceLabel'))
                                 
                                 if size and price_value:
                                     try:
@@ -297,16 +312,31 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 title = re.sub(r'\s*[-|]\s*thepoizon.*$', '', title, flags=re.IGNORECASE)
                 title = re.sub(r'\s*[-|]\s*POIZON.*$', '', title, flags=re.IGNORECASE)
                 title = re.sub(r'\s*[-|]\s*得物.*$', '', title, flags=re.IGNORECASE)
-                # Убираем типичные переводы в конце (если есть оригинальное название в начале)
-                # Например: "New Balance NB 850 Устойчивые к истиранию..." -> "New Balance NB 850"
-                if re.search(r'[a-zA-Z]', title):
-                    # Пытаемся оставить только английскую часть
-                    parts = re.split(r'\s+[А-Яа-яЁё]', title)
-                    if len(parts) > 0 and parts[0].strip():
-                        english_part = parts[0].strip()
-                        if len(english_part) > 10:  # Если английская часть достаточно длинная
-                            title = english_part
-                title = title.strip()
+                
+                # Удаляем все слова на кириллице, оставляем только латиницу, цифры и пробелы
+                # Разбиваем на слова и фильтруем только те, что содержат латиницу или цифры
+                words = title.split()
+                english_words = []
+                
+                for word in words:
+                    # Проверяем, есть ли в слове кириллица
+                    has_cyrillic = re.search(r'[А-Яа-яЁё]', word)
+                    # Проверяем, есть ли в слове латиница или цифры
+                    has_latin_or_digits = re.search(r'[A-Za-z0-9]', word)
+                    
+                    # Пропускаем слова с кириллицей
+                    if has_cyrillic:
+                        continue
+                    
+                    # Оставляем слова с латиницей или цифрами, а также специальные символы (например, модели типа "NB-850")
+                    if has_latin_or_digits or re.match(r'^[A-Za-z0-9\-_/]+$', word):
+                        english_words.append(word)
+                
+                # Объединяем обратно
+                title = ' '.join(english_words).strip()
+                
+                # Дополнительная очистка - убираем множественные пробелы
+                title = re.sub(r'\s+', ' ', title).strip()
             
             # Поиск цены
             price_selectors = [
@@ -436,7 +466,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     if price:
                         break
             
-            # Поиск изображений (галерея товара, первые 3 оригинальные фото)
+            # Поиск изображений (галерея товара, пропускаем первое - это обычно подошва/стопа)
             found_urls = []
             
             # Сначала ищем в JSON-LD - там могут быть ссылки на оригинальные изображения
@@ -521,7 +551,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 found_urls.append(img_url)
                                 print(f"    Added image: {img_url[:80]}...")
                     
-                    # Не прерываемся на 3, собираем все
+                    # Не прерываемся, собираем все
                 
                 print(f"Found {len(found_urls)} images in HTML gallery")
             
@@ -548,16 +578,35 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Total found {len(found_urls)} image URLs before downloading")
             
-            # Скачиваем и конвертируем изображения (все найденные, максимум 10)
-            max_images = min(len(found_urls), 10)
-            for idx, img_url in enumerate(found_urls[:max_images], 1):
-                print(f"Downloading image {idx}/{max_images}: {img_url[:80]}...")
-                img_base64 = await download_image_to_base64(img_url, client)
-                if img_base64:
-                    images.append(img_base64)
-                    print(f"  Successfully downloaded image {idx}")
-                else:
-                    print(f"  Failed to download image {idx}")
+            # Скачиваем и конвертируем изображения (пропускаем первое - обычно это подошва/стопа)
+            if found_urls:
+                # Пропускаем первое изображение, берем следующие (максимум 10)
+                images_to_download = found_urls[1:11] if len(found_urls) > 1 else []
+                max_images = len(images_to_download)
+                
+                for idx, img_url in enumerate(images_to_download, 1):
+                    print(f"Downloading image {idx}/{max_images}: {img_url[:80]}...")
+                    img_base64 = await download_image_to_base64(img_url, client)
+                    if img_base64:
+                        images.append(img_base64)
+                        print(f"  Successfully downloaded image {idx}")
+                    else:
+                        print(f"  Failed to download image {idx}")
+            
+            # Если images уже содержит URL (из __NEXT_DATA__), нужно их скачать
+            if images and all(isinstance(img, str) and img.startswith('http') for img in images):
+                downloaded_images = []
+                # Пропускаем первое, скачиваем остальные
+                images_to_download = images[1:11] if len(images) > 1 else []
+                for idx, img_url in enumerate(images_to_download, 1):
+                    print(f"Downloading image {idx}/{len(images_to_download)}: {img_url[:80]}...")
+                    img_base64 = await download_image_to_base64(img_url, client)
+                    if img_base64:
+                        downloaded_images.append(img_base64)
+                        print(f"  Successfully downloaded image {idx}")
+                    else:
+                        print(f"  Failed to download image {idx}")
+                images = downloaded_images
             
             print(f"Downloaded {len(images)} images")
             
