@@ -94,11 +94,13 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     page_props = props.get('pageProps', {})
                     
                     # Ищем данные товара в разных местах структуры (более глубокий поиск)
-                    product_data = (page_props.get('productData') or 
+                    # В логах видно, что в pageProps есть 'goodsDetail' - это и есть данные товара!
+                    product_data = (page_props.get('goodsDetail') or 
+                                  page_props.get('productData') or 
                                   page_props.get('product') or
-                                  page_props.get('initialState', {}).get('product') or
-                                  page_props.get('data', {}).get('product') or
-                                  page_props.get('data', {}).get('productData'))
+                                  page_props.get('initialState', {}).get('product') if isinstance(page_props.get('initialState'), dict) else None or
+                                  page_props.get('data', {}).get('product') if isinstance(page_props.get('data'), dict) else None or
+                                  page_props.get('data', {}).get('productData') if isinstance(page_props.get('data'), dict) else None)
                     
                     # Также пробуем поискать в dehydratedState (часто используется в Next.js)
                     dehydrated_state = page_props.get('dehydratedState', {})
@@ -108,36 +110,46 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             state_data = query.get('state', {}).get('data', {})
                             if state_data:
                                 # Пробуем разные варианты
-                                product_data = (state_data.get('product') or 
+                                product_data = (state_data.get('goodsDetail') or
+                                              state_data.get('product') or 
                                               state_data.get('productData') or
-                                              state_data.get('data', {}).get('product') or
-                                              state_data.get('data', {}).get('goodsDetail') or
-                                              state_data.get('goodsDetail'))
+                                              state_data.get('data', {}).get('product') if isinstance(state_data.get('data'), dict) else None or
+                                              state_data.get('data', {}).get('goodsDetail') if isinstance(state_data.get('data'), dict) else None)
                                 if product_data:
-                                    print("Found product_data in dehydratedState.queries")
+                                    print("  Found product_data in dehydratedState.queries")
                                     break
+                    
+                    # Если все еще не нашли, пробуем взять goodsDetail напрямую из pageProps
+                    if not product_data and 'goodsDetail' in page_props:
+                        goods_detail = page_props['goodsDetail']
+                        if goods_detail and isinstance(goods_detail, dict):
+                            product_data = goods_detail
+                            print(f"  ✅ Using goodsDetail from pageProps as product_data, keys: {list(product_data.keys())[:30]}")
                     
                     if product_data:
                         print(f"✅ Found product_data in __NEXT_DATA__")
                         print(f"  product_data type: {type(product_data)}")
-                        print(f"  product_data keys (first 30): {list(product_data.keys())[:30]}")
-                    else:
-                        print("⚠️ product_data not found in __NEXT_DATA__")
-                        print(f"  pageProps keys: {list(page_props.keys())[:20]}")
+                        if isinstance(product_data, dict):
+                            print(f"  product_data keys (first 30): {list(product_data.keys())[:30]}")
                         
                         # Название
-                        title = (product_data.get('title') or 
-                               product_data.get('name') or
-                               product_data.get('productName') or
-                               product_data.get('spuName'))
+                        if isinstance(product_data, dict):
+                            title = (product_data.get('title') or 
+                                   product_data.get('name') or
+                                   product_data.get('productName') or
+                                   product_data.get('spuName') or
+                                   product_data.get('goodsName') or
+                                   product_data.get('goodsNameEn'))
                         
-                        # Изображения (сохраняем как URL, потом скачаем)
-                        images_data = (product_data.get('images') or 
-                                     product_data.get('imageList') or
-                                     product_data.get('imageUrls') or
-                                     product_data.get('spuImages') or
-                                     product_data.get('mainImages') or
-                                     product_data.get('detailImages'))
+                            # Изображения (сохраняем как URL, потом скачаем)
+                            images_data = (product_data.get('images') or 
+                                         product_data.get('imageList') or
+                                         product_data.get('imageUrls') or
+                                         product_data.get('spuImages') or
+                                         product_data.get('mainImages') or
+                                         product_data.get('detailImages') or
+                                         product_data.get('goodsImages') or
+                                         product_data.get('goodsImageList'))
                         
                         if images_data:
                             if isinstance(images_data, list):
@@ -205,6 +217,30 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             skus = value
                                             print(f"  Found SKUs in array: product_data['{key}']")
                                             break
+                        
+                        # Также пробуем поискать размеры и цены в priceInfo из pageProps
+                        if not skus and 'priceInfo' in page_props:
+                            price_info = page_props['priceInfo']
+                            print(f"  Found priceInfo in pageProps, type: {type(price_info)}")
+                            if isinstance(price_info, dict):
+                                print(f"    priceInfo keys: {list(price_info.keys())[:20]}")
+                                # Пробуем найти список размеров с ценами
+                                for key in ['skuList', 'skus', 'sizePriceList', 'sizeList', 'prices']:
+                                    if key in price_info:
+                                        candidate = price_info[key]
+                                        if isinstance(candidate, list) and len(candidate) > 0:
+                                            skus = candidate
+                                            print(f"  ✅ Found SKUs in priceInfo['{key}']")
+                                            break
+                            elif isinstance(price_info, list) and len(price_info) > 0:
+                                # Если priceInfo сам является массивом
+                                first_item = price_info[0]
+                                if isinstance(first_item, dict):
+                                    has_size = any(k in first_item for k in ['size', 'sizeName', 'specValue'])
+                                    has_price = any(k in first_item for k in ['price', 'salePrice', 'currentPrice'])
+                                    if has_size and has_price:
+                                        skus = price_info
+                                        print(f"  ✅ Using priceInfo list as SKUs")
                         
                         # Пробуем найти в __NEXT_DATA__ через другой путь - через queries/dehydratedState
                         if not skus and dehydrated_state:
