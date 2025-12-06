@@ -694,17 +694,43 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 sizes_prices = []
                 print("Searching for sizes and prices using SkuPanel selectors...")
                 
+                # Сначала проверим, есть ли вообще элементы SkuPanel на странице
+                sku_panel_elements = soup.select('div[class*="SkuPanel"]')
+                print(f"  DEBUG: Found {len(sku_panel_elements)} elements with class containing 'SkuPanel'")
+                
                 # Проверяем количество меню (как в оригинальном коде)
                 check_count_menu = soup.select('div.SkuPanel_label__Vbp8t>span:nth-child(1)')
                 menu_count = len(check_count_menu)
                 
-                print(f"  Found {menu_count} menu(s) in SkuPanel")
+                print(f"  Found {menu_count} menu(s) in SkuPanel_label__Vbp8t")
+                
+                # Дополнительная диагностика - проверим все возможные селекторы
+                debug_selectors = {
+                    'SkuPanel_group': soup.select('div.SkuPanel_group__egmoX'),
+                    'SkuPanel_value': soup.select('div.SkuPanel_value__BAJ1p'),
+                    'SkuPanel_price': soup.select('div.SkuPanel_price__KCs7G'),
+                    'SkuPanel_label': soup.select('div.SkuPanel_label__Vbp8t'),
+                }
+                for name, elements in debug_selectors.items():
+                    print(f"  DEBUG: {name} elements found: {len(elements)}")
+                    if elements and len(elements) > 0:
+                        print(f"    First element text: {elements[0].get_text(strip=True)[:100]}")
                 
                 if menu_count == 1:
                     # Одно меню: размеры и цены в nth-child(1)
+                    print(f"  Trying menu_count=1 approach...")
                     try:
+                        # Пробуем разные варианты селекторов
                         size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
                         price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                        
+                        # Если не нашли, пробуем без nth-child
+                        if not size_elements:
+                            size_elements = soup.select('div.SkuPanel_group__egmoX div.SkuPanel_value__BAJ1p')
+                        if not price_elements:
+                            price_elements = soup.select('div.SkuPanel_group__egmoX div.SkuPanel_price__KCs7G')
+                        
+                        print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
                         
                         if size_elements and price_elements:
                             sizes = [elem.get_text(strip=True) for elem in size_elements]
@@ -734,9 +760,18 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 
                 elif menu_count == 2:
                     # Два меню (цвет): размеры и цены в nth-child(2)
+                    print(f"  Trying menu_count=2 approach...")
                     try:
                         size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(2) div.SkuPanel_value__BAJ1p')
                         price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(2) div.SkuPanel_price__KCs7G')
+                        
+                        # Если не нашли, пробуем без nth-child
+                        if not size_elements:
+                            size_elements = soup.select('div.SkuPanel_group__egmoX div.SkuPanel_value__BAJ1p')
+                        if not price_elements:
+                            price_elements = soup.select('div.SkuPanel_group__egmoX div.SkuPanel_price__KCs7G')
+                        
+                        print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
                         
                         if size_elements and price_elements:
                             sizes = [elem.get_text(strip=True) for elem in size_elements]
@@ -764,9 +799,18 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 
                 elif menu_count == 3:
                     # Три меню: размеры и цены в nth-child(3)
+                    print(f"  Trying menu_count=3 approach...")
                     try:
                         size_element = soup.select_one('div.SkuPanel_group__egmoX:nth-child(3) div.SkuPanel_value__BAJ1p')
                         price_element = soup.select_one('div.SkuPanel_group__egmoX:nth-child(3) div.SkuPanel_price__KCs7G')
+                        
+                        # Если не нашли, пробуем без nth-child
+                        if not size_element:
+                            size_element = soup.select_one('div.SkuPanel_group__egmoX div.SkuPanel_value__BAJ1p')
+                        if not price_element:
+                            price_element = soup.select_one('div.SkuPanel_group__egmoX div.SkuPanel_price__KCs7G')
+                        
+                        print(f"    Found size_element: {bool(size_element)}, price_element: {bool(price_element)}")
                         
                         if size_element and price_element:
                             size = size_element.get_text(strip=True)
@@ -791,6 +835,44 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     except Exception as e:
                         print(f"  Error parsing sizes/prices with menu_count=3: {e}")
                 
+                # Попробуем более простой подход - просто ищем все элементы с этими классами
+                if not sizes_prices:
+                    print(f"  Fallback: Trying to find ANY SkuPanel_value and SkuPanel_price elements...")
+                    try:
+                        all_size_elements = soup.select('div.SkuPanel_value__BAJ1p')
+                        all_price_elements = soup.select('div.SkuPanel_price__KCs7G')
+                        
+                        print(f"    Found {len(all_size_elements)} total size elements, {len(all_price_elements)} total price elements")
+                        
+                        if all_size_elements and all_price_elements and len(all_size_elements) == len(all_price_elements):
+                            sizes = [elem.get_text(strip=True) for elem in all_size_elements]
+                            prices = [elem.get_text(strip=True).replace('₽', '').replace('P', '').replace('$', '').replace(' ', '') for elem in all_price_elements]
+                            
+                            print(f"    Extracted {len(sizes)} sizes: {sizes[:5]}...")
+                            print(f"    Extracted {len(prices)} prices: {prices[:5]}...")
+                            
+                            for size, price_text in zip(sizes, prices):
+                                try:
+                                    price_clean = price_text.replace(' ', '').replace(',', '').replace('₽', '').replace('P', '').replace('$', '')
+                                    if price_clean and price_clean != '-':
+                                        price_num = float(price_clean)
+                                        if price_num < 1000:
+                                            price_num = price_num * 12.5
+                                        price_cents = int(price_num * 100)
+                                        
+                                        sizes_prices.append({
+                                            'size': size,
+                                            'price': price_cents
+                                        })
+                                        print(f"    ✅ Found size: {size}, price: {price_cents} копеек")
+                                except Exception as e:
+                                    print(f"    ⚠️ Error parsing price '{price_text}' for size {size}: {e}")
+                                    pass
+                    except Exception as e:
+                        print(f"  Error in fallback parsing: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
                 # Если есть вкладки размеров (check_gender в оригинальном коде)
                 if not sizes_prices:
                     try:
@@ -800,6 +882,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             # Берем первую вкладку
                             size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
                             price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                            
+                            print(f"    In tabs: Found {len(size_elements)} size elements, {len(price_elements)} price elements")
                             
                             if size_elements and price_elements:
                                 sizes = [elem.get_text(strip=True) for elem in size_elements]
