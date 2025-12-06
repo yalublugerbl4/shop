@@ -3,8 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes import products, me, admin
-import threading
-from app.bot import run_bot
 
 app = FastAPI(title="Telegram Shop API")
 
@@ -15,14 +13,19 @@ if settings.cors_origins:
 elif settings.frontend_url:
     cors_origins = [settings.frontend_url]
 
+# Всегда добавляем Telegram WebApp origin
 cors_origins.append('https://web.telegram.org')
+
+# Если origins пуст, разрешаем все (для разработки)
+final_origins = cors_origins if cors_origins else ['*']
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins if cors_origins else ['*'],
+    allow_origins=final_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -48,24 +51,11 @@ async def global_exception_handler(request, exc):
     )
 
 
-# Запуск бота в отдельном потоке (будет вызван при старте приложения)
-
-
 if __name__ == "__main__":
     import uvicorn
-    
-    # Запуск бота в фоне
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=settings.port,
         reload=settings.node_env == "development"
     )
-else:
-    # Для production (gunicorn/uvicorn)
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-
