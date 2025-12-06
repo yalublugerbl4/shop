@@ -119,56 +119,127 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 '.price',
                 '.goods-price',
                 '.product__price',
+                '.price-value',
+                '.product-price-value',
                 '[class*="price"]',
                 '[class*="Price"]',
+                '[class*="PRICE"]',
                 '[data-price]',
                 '[class*="amount"]',
+                '[class*="Amount"]',
                 '[class*="cost"]',
+                '[class*="Cost"]',
                 '.current-price',
-                '.price-current'
+                '.price-current',
+                '.price__current',
+                '[itemprop="price"]',
+                '[data-value]',
+                '.sale-price',
+                '.final-price'
             ]
             
             for selector in price_selectors:
-                price_elem = soup.select_one(selector)
-                if price_elem:
+                price_elems = soup.select(selector)
+                for price_elem in price_elems:
                     price_text = price_elem.get_text(strip=True)
-                    # Извлекаем число из цены (удаляем символы валют)
-                    price_text_clean = re.sub(r'[^\d.,]', '', price_text.replace(',', ''))
-                    if price_text_clean:
-                        try:
-                            # Предполагаем, что цена в рублях (thepoizon.ru показывает цены в рублях)
-                            # Если цена слишком маленькая, возможно это в юанях - умножаем на 12.5
-                            price_num = float(price_text_clean)
-                            if price_num < 1000:  # Если цена меньше 1000, возможно это юани
-                                price_rub = int(price_num * 12.5 * 100)  # в копейках
-                            else:
-                                price_rub = int(price_num * 100)  # уже в рублях, переводим в копейки
-                            price = price_rub
-                            print(f"Found price with selector '{selector}': {price_text} -> {price_rub} копеек")
-                            break
-                        except:
-                            pass
+                    if not price_text:
+                        # Пробуем атрибуты
+                        price_text = price_elem.get('data-price') or price_elem.get('data-value') or price_elem.get('content') or ''
+                    
+                    if price_text:
+                        # Извлекаем число из цены (удаляем символы валют)
+                        # Поддерживаем разные форматы: "12 345 ₽", "12345₽", "12,345", "12.345"
+                        price_text_clean = re.sub(r'[^\d.,]', '', price_text.replace(',', '').replace(' ', ''))
+                        if price_text_clean:
+                            try:
+                                price_num = float(price_text_clean.replace(',', '.'))
+                                # Проверяем разумность цены (от 100 рублей до 1 млн)
+                                if 100 <= price_num <= 1000000:
+                                    price_rub = int(price_num * 100)  # в копейках
+                                    price = price_rub
+                                    print(f"Found price with selector '{selector}': {price_text} -> {price_rub} копеек")
+                                    break
+                                elif price_num < 100:  # Если цена меньше 100, возможно это юани
+                                    price_rub = int(price_num * 12.5 * 100)  # в копейках
+                                    if price_rub >= 10000:  # Проверяем разумность после конвертации
+                                        price = price_rub
+                                        print(f"Found price (yuan->rub) with selector '{selector}': {price_text} -> {price_rub} копеек")
+                                        break
+                            except Exception as e:
+                                print(f"Error parsing price '{price_text}': {e}")
+                                pass
+                if price:
+                    break
             
             # Также пробуем найти цену в JSON-LD или других мета-тегах
             if not price:
                 # Ищем JSON-LD с данными товара
-                json_ld = soup.find('script', type='application/ld+json')
-                if json_ld:
+                json_ld_scripts = soup.find_all('script', type='application/ld+json')
+                for json_ld in json_ld_scripts:
                     try:
                         import json
                         data = json.loads(json_ld.string)
+                        # Поддерживаем как объект, так и массив
+                        if isinstance(data, list) and len(data) > 0:
+                            data = data[0]
+                        
                         if isinstance(data, dict):
                             offers = data.get('offers', {})
                             if isinstance(offers, dict) and 'price' in offers:
                                 price_num = float(offers['price'])
-                                if price_num < 1000:  # Если цена меньше 1000, возможно это юани
+                                if 100 <= price_num <= 1000000:
+                                    price_rub = int(price_num * 100)
+                                    price = price_rub
+                                    print(f"Found price in JSON-LD offers: {price_rub} копеек")
+                                    break
+                                elif price_num < 100:
                                     price_rub = int(price_num * 12.5 * 100)
-                                else:
-                                    price_rub = int(price_num * 100)  # уже в рублях
-                                price = price_rub
-                                print(f"Found price in JSON-LD: {price_rub} копеек")
+                                    if price_rub >= 10000:
+                                        price = price_rub
+                                        print(f"Found price (yuan->rub) in JSON-LD: {price_rub} копеек")
+                                        break
+                    except Exception as e:
+                        print(f"Error parsing JSON-LD: {e}")
+                        pass
+            
+            # Если все еще не нашли, ищем в meta-тегах
+            if not price:
+                meta_price = soup.find('meta', property='product:price:amount')
+                if meta_price:
+                    try:
+                        price_num = float(meta_price.get('content', ''))
+                        if 100 <= price_num <= 1000000:
+                            price_rub = int(price_num * 100)
+                            price = price_rub
+                            print(f"Found price in meta product:price:amount: {price_rub} копеек")
                     except:
                         pass
+            
+            # Последняя попытка - ищем все числа на странице, которые похожи на цены
+            if not price:
+                # Ищем числа от 1000 до 100000 с символом рубля рядом
+                price_patterns = [
+                    re.compile(r'(\d{1,3}(?:\s?\d{3})*(?:[.,]\d{2})?)\s*[₽₴]', re.IGNORECASE),
+                    re.compile(r'(\d{1,3}(?:\s?\d{3})*(?:[.,]\d{2})?)\s*(?:руб|RUB)', re.IGNORECASE),
+                    re.compile(r'price["\']?\s*[:=]\s*["\']?(\d{1,3}(?:\s?\d{3})*(?:[.,]\d{2})?)', re.IGNORECASE),
+                ]
+                
+                page_text = soup.get_text()
+                for pattern in price_patterns:
+                    matches = pattern.findall(page_text)
+                    for match in matches[:5]:  # Проверяем первые 5 совпадений
+                        try:
+                            price_text_clean = match.replace(' ', '').replace(',', '.')
+                            price_num = float(price_text_clean)
+                            if 1000 <= price_num <= 100000:
+                                price_rub = int(price_num * 100)
+                                price = price_rub
+                                print(f"Found price with regex pattern: {match} -> {price_rub} копеек")
+                                break
+                        except:
+                            pass
+                    if price:
+                        break
             
             # Поиск изображений
             # Сначала пробуем найти основные изображения товара
@@ -250,7 +321,14 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 raise Exception("Не удалось найти название товара. Возможно, структура страницы изменилась или товар недоступен.")
             
             if not price or price <= 0:
-                raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru.")
+                # Дополнительная отладочная информация
+                print("DEBUG: Price selectors found:")
+                for selector in ['.product-price', '.price', '[class*="price"]', '[data-price]']:
+                    elems = soup.select(selector)
+                    for elem in elems[:3]:
+                        print(f"  {selector}: {elem.get_text(strip=True)[:100]} (attrs: {dict(list(elem.attrs.items())[:3])})")
+                
+                raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru. Название товара найдено: '{title[:50]}...'")
             
             print(f"Successfully parsed product: {title[:50]}... (price: {price} копеек)")
             
