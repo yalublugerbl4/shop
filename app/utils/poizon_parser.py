@@ -68,6 +68,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             price = None
             images = []
             description = ""
+            sizes_prices = []  # Инициализируем список размеров
             next_data = None
             
             # Ищем __NEXT_DATA__ скрипт (там все данные товара)
@@ -87,10 +88,29 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     props = next_data.get('props', {})
                     page_props = props.get('pageProps', {})
                     
-                    # Ищем данные товара в разных местах структуры
+                    # Ищем данные товара в разных местах структуры (более глубокий поиск)
                     product_data = (page_props.get('productData') or 
                                   page_props.get('product') or
-                                  page_props.get('initialState', {}).get('product'))
+                                  page_props.get('initialState', {}).get('product') or
+                                  page_props.get('data', {}).get('product') or
+                                  page_props.get('data', {}).get('productData'))
+                    
+                    # Также пробуем поискать в dehydratedState (часто используется в Next.js)
+                    dehydrated_state = page_props.get('dehydratedState', {})
+                    if not product_data and dehydrated_state:
+                        queries = dehydrated_state.get('queries', [])
+                        for query in queries:
+                            state_data = query.get('state', {}).get('data', {})
+                            if state_data:
+                                # Пробуем разные варианты
+                                product_data = (state_data.get('product') or 
+                                              state_data.get('productData') or
+                                              state_data.get('data', {}).get('product') or
+                                              state_data.get('data', {}).get('goodsDetail') or
+                                              state_data.get('goodsDetail'))
+                                if product_data:
+                                    print("Found product_data in dehydratedState.queries")
+                                    break
                     
                     if product_data:
                         print("Found product data in __NEXT_DATA__")
@@ -134,46 +154,97 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         print(f"Found {len(images)} image URLs from __NEXT_DATA__ (skipped first)")
                         
-                        # SKU данные (размеры и цены)
+                        # SKU данные (размеры и цены) - более глубокий поиск
                         skus = (product_data.get('skus') or 
                               product_data.get('skuList') or
                               product_data.get('skuInfos') or
                               product_data.get('skuData') or
                               product_data.get('priceList') or
                               product_data.get('sizeList') or
-                              product_data.get('sizePriceList'))
+                              product_data.get('sizePriceList') or
+                              product_data.get('sizes') or
+                              product_data.get('sizeInfos') or
+                              product_data.get('goodsSkuList') or
+                              product_data.get('skuInfosList'))
+                        
+                        # Если не нашли напрямую, пробуем поискать глубже
+                        if not skus:
+                            # Пробуем в data.goodsDetail или подобных структурах
+                            nested_data = (product_data.get('data', {}) or
+                                         product_data.get('goodsDetail', {}) or
+                                         product_data.get('detail', {}))
+                            if isinstance(nested_data, dict):
+                                skus = (nested_data.get('skus') or 
+                                      nested_data.get('skuList') or
+                                      nested_data.get('skuInfos') or
+                                      nested_data.get('sizeList'))
+                        
+                        # Также пробуем поискать в массивах внутри product_data
+                        if not skus:
+                            for key, value in product_data.items():
+                                if isinstance(value, list) and len(value) > 0:
+                                    # Проверяем, похоже ли это на список SKU (первый элемент имеет size/price)
+                                    first_item = value[0]
+                                    if isinstance(first_item, dict):
+                                        if any(k in first_item for k in ['size', 'sizeName', 'specValue']):
+                                            if any(k in first_item for k in ['price', 'salePrice', 'currentPrice']):
+                                                skus = value
+                                                print(f"Found SKUs in nested array: {key}")
+                                                break
                         
                         if skus and isinstance(skus, list):
                             sizes_prices = []
-                            for sku in skus:
+                            print(f"Processing {len(skus)} SKU items...")
+                            for idx, sku in enumerate(skus):
                                 size = (sku.get('size') or 
                                        sku.get('sizeName') or 
                                        sku.get('specValue') or
                                        sku.get('sizeValue') or
                                        sku.get('sizeText') or
-                                       sku.get('sizeLabel'))
+                                       sku.get('sizeLabel') or
+                                       sku.get('sizeNameCn') or
+                                       sku.get('sizeNameEn'))
                                 price_value = (sku.get('price') or 
                                              sku.get('salePrice') or 
                                              sku.get('currentPrice') or
                                              sku.get('priceValue') or
                                              sku.get('priceText') or
-                                             sku.get('priceLabel'))
+                                             sku.get('priceLabel') or
+                                             sku.get('lowPrice') or
+                                             sku.get('highPrice'))
+                                
+                                # Если не нашли напрямую, пробуем вложенные структуры
+                                if not price_value and isinstance(sku, dict):
+                                    price_info = sku.get('priceInfo') or sku.get('price')
+                                    if isinstance(price_info, dict):
+                                        price_value = (price_info.get('price') or 
+                                                     price_info.get('salePrice') or
+                                                     price_info.get('currentPrice'))
                                 
                                 if size and price_value:
                                     try:
                                         # Цена может быть в разных форматах
                                         if isinstance(price_value, (int, float)):
-                                            price_cents = int(price_value * 100) if price_value < 1000 else int(price_value)
+                                            # Если число большое (>= 1000), возможно это уже в копейках или центах
+                                            if price_value >= 1000:
+                                                price_cents = int(price_value)
+                                            else:
+                                                price_cents = int(price_value * 100)  # Предполагаем рубли
                                         else:
-                                            price_str = str(price_value).replace(' ', '').replace(',', '')
+                                            price_str = str(price_value).replace(' ', '').replace(',', '').replace('₽', '').replace('₴', '')
                                             price_num = float(re.sub(r'[^\d.]', '', price_str))
-                                            price_cents = int(price_num * 100) if price_num < 1000 else int(price_num)
+                                            if price_num >= 1000:
+                                                price_cents = int(price_num)
+                                            else:
+                                                price_cents = int(price_num * 100)
                                         
                                         sizes_prices.append({
                                             'size': str(size),
                                             'price': price_cents
                                         })
-                                    except:
+                                        print(f"  SKU {idx+1}: size={size}, price={price_cents} копеек")
+                                    except Exception as e:
+                                        print(f"  Error parsing SKU {idx+1}: {e}")
                                         pass
                             
                             if sizes_prices:
@@ -187,7 +258,14 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 min_price = min(item['price'] for item in sizes_prices)
                                 price = min_price
                                 
-                                print(f"Found {len(sizes_prices)} sizes from __NEXT_DATA__")
+                                print(f"✅ Found {len(sizes_prices)} sizes from __NEXT_DATA__")
+                            else:
+                                print(f"⚠️ SKUs list found but no valid sizes parsed (skus count: {len(skus)})")
+                                # Выводим структуру для отладки
+                                if skus and len(skus) > 0:
+                                    print(f"  First SKU structure (keys): {list(skus[0].keys())[:10]}")
+                        else:
+                            print(f"⚠️ No SKUs found in product_data. Available keys: {list(product_data.keys())[:20]}")
                         
                         # Если цена не найдена из SKU, ищем основную цену
                         if not price:
@@ -611,42 +689,69 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             print(f"Downloaded {len(images)} images")
             
             # Парсинг размеров и цен (если еще не нашли из __NEXT_DATA__)
-            sizes_prices = []
-            if not description:  # Если описание пустое, значит размеры не найдены
-                print("Searching for sizes and prices...")
+            # Инициализируем sizes_prices только если description не установлено
+            if not description:
+                sizes_prices = []
+                print("Searching for sizes and prices in HTML (fallback)...")
             
             # Ищем размеры в различных селекторах
-            size_selectors = [
-                '[class*="size"]',
-                '[class*="Size"]',
-                '[data-size]',
-                '.size-selector',
-                '.product-sizes',
-                '[class*="sku"]'
-            ]
-            
-            for selector in size_selectors:
-                size_elements = soup.select(selector)
-                if size_elements:
-                    print(f"  Found size elements with selector '{selector}': {len(size_elements)}")
-                    for elem in size_elements:
-                        # Получаем текст элемента
-                        text = elem.get_text(strip=True)
-                        # Ищем паттерн: размер и цена
-                        # Примеры: "39,5 (40,5) 9 164 ₽", "38 (39) 10 072 ₽"
-                        size_price_match = re.search(r'([\d,]+(?:\s*\([^)]+\))?)\s+([\d\s]+)\s*[₽₴]', text)
-                        if size_price_match:
-                            size_text = size_price_match.group(1).strip()
-                            price_text = size_price_match.group(2).strip().replace(' ', '')
-                            try:
-                                price_num = float(price_text)
-                                sizes_prices.append({
-                                    'size': size_text,
-                                    'price': int(price_num * 100)  # в копейках
-                                })
-                                print(f"    Found size: {size_text}, price: {price_num} руб")
-                            except:
-                                pass
+            if not description:
+                size_selectors = [
+                    'div.SkuPanel_group__egmoX',  # Специфичный для thepoizon.ru
+                    '[class*="SkuPanel"]',
+                    '[class*="sku"]',
+                    '[class*="Sku"]',
+                    '[class*="size"]',
+                    '[class*="Size"]',
+                    '[data-size]',
+                    '.size-selector',
+                    '.product-sizes',
+                    '[class*="size-select"]',
+                    'div[class*="size"]',
+                    'span[class*="size"]',
+                    'button[class*="size"]'
+                ]
+                
+                for selector in size_selectors:
+                    size_elements = soup.select(selector)
+                    if size_elements:
+                        print(f"  Found {len(size_elements)} elements with selector '{selector}'")
+                        for elem in size_elements:
+                            # Получаем текст элемента и родительского элемента
+                            text = elem.get_text(strip=True)
+                            parent_text = elem.parent.get_text(strip=True) if elem.parent else ""
+                            
+                            # Ищем паттерн: размер и цена в разных форматах
+                            # Примеры: "39,5 (40,5) 9 164 ₽", "38 (39) 10 072 ₽", "40.5 9120 ₽"
+                            patterns = [
+                                re.compile(r'([\d,]+(?:\s*\([^)]+\))?)\s+(\d+(?:\s+\d+)*)\s*[₽₴]', re.IGNORECASE),
+                                re.compile(r'размер[:\s]+([\d,]+(?:\s*\([^)]+\))?).*?(\d+(?:\s+\d+)*)\s*[₽₴]', re.IGNORECASE),
+                                re.compile(r'(\d{1,2}[,.]?\d*)\s*[:\-]\s*(\d+(?:\s+\d+)*)\s*[₽₴]', re.IGNORECASE),
+                            ]
+                            
+                            # Пробуем в тексте элемента и родительского
+                            search_texts = [text, parent_text] if parent_text else [text]
+                            
+                            for search_text in search_texts:
+                                for pattern in patterns:
+                                    size_price_match = pattern.search(search_text)
+                                    if size_price_match:
+                                        size_text = size_price_match.group(1).strip()
+                                        price_text = size_price_match.group(2).strip().replace(' ', '')
+                                        try:
+                                            price_num = float(price_text)
+                                            if 1000 <= price_num <= 200000:  # Разумный диапазон цен
+                                                # Проверяем, нет ли уже такого размера
+                                                if not any(sp['size'] == size_text for sp in sizes_prices):
+                                                    sizes_prices.append({
+                                                        'size': size_text,
+                                                        'price': int(price_num * 100)  # в копейках
+                                                    })
+                                                    print(f"    ✅ Found size: {size_text}, price: {price_num} руб")
+                                        except:
+                                            pass
+                        if sizes_prices:
+                            break  # Если нашли размеры, прекращаем поиск
             
             # Если не нашли через селекторы, ищем по тексту страницы
             if not sizes_prices:
@@ -703,10 +808,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Successfully parsed product: {title[:50]}... (price: {final_price} копеек, images: {len(images)}, sizes: {len(sizes_prices)})")
             
+            # Логируем финальное описание для отладки
+            if description:
+                print(f"Description will be saved (first 200 chars): {description[:200]}")
+            else:
+                print("WARNING: Description is empty - no sizes and prices found!")
+            
             return {
                 'title': title[:500],  # Ограничиваем длину
                 'price_cents': final_price,
-                'description': description[:2000] if description else '',  # Размеры и цены
+                'description': description[:2000] if description else '',  # Размеры и цены сохраняются здесь
                 'images_base64': images  # Все найденные изображения (до 10)
             }
             
