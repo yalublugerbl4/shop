@@ -136,11 +136,18 @@ async def parse_poizon(
     user = await require_admin(current_user)
     
     # Парсим товар
-    parsed_data = await parse_poizon_product(request.url)
-    if not parsed_data:
+    try:
+        parsed_data = await parse_poizon_product(request.url)
+        if not parsed_data:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"code": "PARSE_ERROR", "message": "Не удалось распарсить товар. Проверьте URL и убедитесь, что страница доступна."}}
+            )
+    except Exception as e:
+        error_message = str(e)
         raise HTTPException(
             status_code=400,
-            detail={"error": {"code": "PARSE_ERROR", "message": "Failed to parse product from POIZON. Check URL or try again later."}}
+            detail={"error": {"code": "PARSE_ERROR", "message": error_message}}
         )
     
     # Создаем товар в БД

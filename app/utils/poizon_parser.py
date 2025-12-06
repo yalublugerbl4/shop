@@ -27,6 +27,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
     Возвращает данные товара для создания в БД
     """
     try:
+        # Проверяем, что URL валидный
+        if not url or not url.startswith('http'):
+            raise Exception("Некорректный URL. URL должен начинаться с http:// или https://")
+        
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             # Заголовки для имитации браузера
             headers = {
@@ -35,11 +39,20 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,zh-CN;q=0.6,zh;q=0.5',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Referer': 'https://www.poizon.com/',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
             }
             
-            response = await client.get(url, headers=headers)
+            print(f"Fetching POIZON URL: {url}")
+            response = await client.get(url, headers=headers, timeout=30.0)
             response.raise_for_status()
             
+            # Проверяем, что получили HTML
+            content_type = response.headers.get('content-type', '')
+            if 'text/html' not in content_type:
+                raise Exception(f"Получен не HTML-контент (content-type: {content_type}). Проверьте URL товара.")
+            
+            print(f"Received HTML, length: {len(response.text)}")
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Парсинг данных (адаптировано под структуру POIZON)
@@ -57,7 +70,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 '.goods-name',
                 'h1',
                 '[class*="title"]',
-                '[class*="name"]'
+                '[class*="name"]',
+                'title'
             ]
             
             for selector in title_selectors:
@@ -65,6 +79,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 if title_elem:
                     title = title_elem.get_text(strip=True)
                     if title and len(title) > 5:
+                        print(f"Found title with selector '{selector}': {title[:50]}...")
                         break
             
             # Если не нашли через селекторы, ищем в мета-тегах
@@ -72,6 +87,17 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 meta_title = soup.find('meta', property='og:title')
                 if meta_title:
                     title = meta_title.get('content', '').strip()
+                    print(f"Found title from meta: {title[:50]}...")
+                
+                # Пробуем из тега title
+                if not title:
+                    title_tag = soup.find('title')
+                    if title_tag:
+                        title = title_tag.get_text(strip=True)
+                        # Убираем стандартные суффиксы сайта
+                        title = re.sub(r'\s*[-|]\s*POIZON.*$', '', title, flags=re.IGNORECASE)
+                        title = re.sub(r'\s*[-|]\s*得物.*$', '', title, flags=re.IGNORECASE)
+                        print(f"Found title from <title> tag: {title[:50]}...")
             
             # Поиск цены
             price_selectors = [
@@ -79,7 +105,9 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 '.goods-price',
                 '.product-price',
                 '[class*="price"]',
-                '[data-price]'
+                '[data-price]',
+                '[class*="Price"]',
+                '[class*="amount"]'
             ]
             
             for selector in price_selectors:
@@ -94,9 +122,28 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             price_yuan = float(price_text_clean)
                             price_rub = int(price_yuan * 12.5 * 100)  # в копейках
                             price = price_rub
+                            print(f"Found price with selector '{selector}': {price_text} -> {price_rub} копеек")
                             break
                         except:
                             pass
+            
+            # Также пробуем найти цену в JSON-LD или других мета-тегах
+            if not price:
+                # Ищем JSON-LD с данными товара
+                json_ld = soup.find('script', type='application/ld+json')
+                if json_ld:
+                    try:
+                        import json
+                        data = json.loads(json_ld.string)
+                        if isinstance(data, dict):
+                            offers = data.get('offers', {})
+                            if isinstance(offers, dict) and 'price' in offers:
+                                price_yuan = float(offers['price'])
+                                price_rub = int(price_yuan * 12.5 * 100)
+                                price = price_rub
+                                print(f"Found price in JSON-LD: {price_rub} копеек")
+                    except:
+                        pass
             
             # Поиск изображений
             # Сначала пробуем найти основные изображения товара
@@ -105,14 +152,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 '.goods-image img',
                 '.swiper-slide img',
                 '[class*="product"] img[src*="http"]',
-                '[class*="goods"] img[src*="http"]'
+                '[class*="goods"] img[src*="http"]',
+                'img[src*="goods"]',
+                'img[src*="product"]'
             ]
             
             found_urls = set()
             for selector in img_selectors:
                 img_tags = soup.select(selector)
                 for img in img_tags[:5]:  # максимум 5 для выбора лучших
-                    img_url = img.get('src') or img.get('data-src') or img.get('data-original') or img.get('data-lazy')
+                    img_url = img.get('src') or img.get('data-src') or img.get('data-original') or img.get('data-lazy') or img.get('data-url')
                     if img_url:
                         if img_url.startswith('//'):
                             img_url = 'https:' + img_url
@@ -126,13 +175,21 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             if og_image:
                 img_url = og_image.get('content', '').strip()
                 if img_url and img_url not in found_urls:
+                    if img_url.startswith('//'):
+                        img_url = 'https:' + img_url
+                    elif img_url.startswith('/'):
+                        img_url = 'https://www.poizon.com' + img_url
                     found_urls.add(img_url)
+            
+            print(f"Found {len(found_urls)} image URLs")
             
             # Скачиваем и конвертируем изображения (максимум 3)
             for img_url in list(found_urls)[:3]:
                 img_base64 = await download_image_to_base64(img_url, client)
                 if img_base64:
                     images.append(img_base64)
+            
+            print(f"Downloaded {len(images)} images")
             
             # Описание
             desc_selectors = [
@@ -148,6 +205,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 if desc_elem:
                     description = desc_elem.get_text(strip=True, separator='\n')
                     if description and len(description) > 10:
+                        print(f"Found description with selector '{selector}'")
                         break
             
             # Если не нашли описание, используем мета-описание
@@ -155,14 +213,15 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 meta_desc = soup.find('meta', property='og:description')
                 if meta_desc:
                     description = meta_desc.get('content', '').strip()
+                    print("Found description from meta")
             
             if not title:
-                print("Failed to find product title")
-                return None
+                raise Exception("Не удалось найти название товара. Возможно, структура страницы изменилась или товар недоступен.")
             
             if not price or price <= 0:
-                print(f"Failed to find valid price (found: {price})")
-                return None
+                raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы POIZON.")
+            
+            print(f"Successfully parsed product: {title[:50]}... (price: {price} копеек)")
             
             return {
                 'title': title[:500],  # Ограничиваем длину
@@ -172,11 +231,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             }
             
     except httpx.HTTPStatusError as e:
-        print(f"HTTP error parsing POIZON product: {e.response.status_code}")
-        return None
+        error_msg = f"HTTP {e.response.status_code}: Не удалось загрузить страницу POIZON. Сайт может блокировать запросы или URL неверный."
+        print(error_msg)
+        raise Exception(error_msg)
+    except httpx.RequestError as e:
+        error_msg = f"Ошибка сети: Не удалось подключиться к POIZON. Проверьте подключение к интернету."
+        print(error_msg)
+        raise Exception(error_msg)
     except Exception as e:
-        print(f"Error parsing POIZON product: {e}")
+        error_msg = str(e)
+        print(f"Parse error: {error_msg}")
         import traceback
         traceback.print_exc()
-        return None
-
+        raise Exception(error_msg)
