@@ -152,16 +152,27 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                          product_data.get('goodsImages') or
                                          product_data.get('goodsImageList') or
                                          product_data.get('sizeImageList'))
+                            
+                            print(f"  DEBUG: images_data type: {type(images_data)}")
+                            if isinstance(images_data, list):
+                                print(f"  DEBUG: images_data list length: {len(images_data)}")
                         
                         if images_data:
                             if isinstance(images_data, list):
                                 # Пропускаем первое изображение (обычно это подошва/стопа)
-                                for img in images_data[1:11]:  # Пропускаем первый, берем следующие 10
+                                for idx, img in enumerate(images_data[1:11]):  # Пропускаем первый, берем следующие 10
                                     img_url = None
                                     if isinstance(img, str):
                                         img_url = img
                                     elif isinstance(img, dict):
-                                        img_url = img.get('url') or img.get('src') or img.get('imageUrl') or img.get('originUrl')
+                                        # detailImageList может содержать объекты с url, originUrl, imageUrl и т.д.
+                                        img_url = (img.get('url') or 
+                                                  img.get('src') or 
+                                                  img.get('imageUrl') or 
+                                                  img.get('originUrl') or
+                                                  img.get('image') or
+                                                  img.get('originalUrl') or
+                                                  img.get('largeUrl'))
                                     
                                     if img_url:
                                         # Нормализуем URL
@@ -172,6 +183,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         
                                         if img_url.startswith('http') and img_url not in images:
                                             images.append(img_url)  # Пока сохраняем как URL
+                                            print(f"    Added image {idx+1} from __NEXT_DATA__: {img_url[:80]}...")
                             elif isinstance(images_data, str):
                                 # Если одно изображение, тоже пропускаем
                                 pass
@@ -285,14 +297,52 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         if len(first_sku['properties']) > 0:
                                             print(f"  DEBUG: First property item: {first_sku['properties'][0]}")
                             
+                            # Строим маппинг propertyValueId -> значение размера из baseProperties
+                            size_mapping = {}
+                            if 'baseProperties' in product_data:
+                                base_props = product_data['baseProperties']
+                                print(f"  DEBUG: baseProperties type: {type(base_props)}")
+                                if isinstance(base_props, list):
+                                    print(f"  DEBUG: baseProperties list length: {len(base_props)}")
+                                    for prop_group in base_props:
+                                        if isinstance(prop_group, dict):
+                                            # Ищем группу с размерами (обычно propertyName содержит 'size' или 'Size')
+                                            prop_name = prop_group.get('propertyName') or prop_group.get('name') or ''
+                                            if 'size' in str(prop_name).lower():
+                                                # В values могут быть размеры
+                                                values = prop_group.get('values') or prop_group.get('propertyValues') or []
+                                                if isinstance(values, list):
+                                                    for val in values:
+                                                        if isinstance(val, dict):
+                                                            value_id = val.get('propertyValueId') or val.get('id')
+                                                            value_text = val.get('propertyValue') or val.get('value') or val.get('name') or val.get('text')
+                                                            if value_id and value_text:
+                                                                size_mapping[value_id] = value_text
+                                                                print(f"    Mapped size: {value_id} -> {value_text}")
+                                                break  # Нашли группу размеров
+                                elif isinstance(base_props, dict):
+                                    # Если baseProperties - словарь, пробуем найти внутри
+                                    for key, value in base_props.items():
+                                        if isinstance(value, list):
+                                            for item in value:
+                                                if isinstance(item, dict):
+                                                    value_id = item.get('propertyValueId') or item.get('id')
+                                                    value_text = item.get('propertyValue') or item.get('value') or item.get('name')
+                                                    if value_id and value_text:
+                                                        size_mapping[value_id] = value_text
+                            
                             # Пробуем найти цены в product_data['price'] - возможно там массив цен по SKU
                             price_list = None
+                            base_price_money = None
                             if 'price' in product_data:
                                 price_data = product_data['price']
                                 print(f"  DEBUG: price field type: {type(price_data)}")
                                 if isinstance(price_data, dict):
                                     print(f"  DEBUG: price dict keys: {list(price_data.keys())[:10]}")
-                                    # Возможно, цены в price.skuList или price.priceList
+                                    # Возможно, цены в price.money (общая цена) или price.skuList
+                                    base_price_money = price_data.get('money')  # Общая цена в центах/копейках
+                                    if base_price_money:
+                                        print(f"  DEBUG: Found base price money: {base_price_money}")
                                     price_list = (price_data.get('skuList') or 
                                                  price_data.get('priceList') or
                                                  price_data.get('list') or
@@ -301,12 +351,36 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     price_list = price_data
                                     print(f"  DEBUG: price is a list with {len(price_list)} items")
                             
+                            print(f"  DEBUG: Size mapping has {len(size_mapping)} entries")
+                            if not size_mapping:
+                                print(f"  ⚠️ No size mapping found in baseProperties, trying alternative approach...")
+                            
                             for idx, sku in enumerate(skus):
-                                # Извлекаем размер из properties
+                                # Извлекаем размер из properties через propertyValueId -> baseProperties маппинг
                                 size = None
                                 properties = sku.get('properties')
                                 
-                                if isinstance(properties, dict):
+                                if isinstance(properties, list):
+                                    # properties - список объектов с propertyValueId
+                                    for prop in properties:
+                                        if isinstance(prop, dict):
+                                            property_value_id = prop.get('propertyValueId') or prop.get('id')
+                                            if property_value_id:
+                                                # Ищем значение размера в маппинге
+                                                if property_value_id in size_mapping:
+                                                    size = size_mapping[property_value_id]
+                                                    print(f"    SKU {idx+1}: Found size via mapping {property_value_id} -> {size}")
+                                                    break
+                                                else:
+                                                    # Если маппинга нет, пробуем прямое значение
+                                                    size_candidate = (prop.get('propertyValue') or 
+                                                                    prop.get('value') or 
+                                                                    prop.get('name') or
+                                                                    prop.get('text'))
+                                                    if size_candidate:
+                                                        size = size_candidate
+                                                        break
+                                elif isinstance(properties, dict):
                                     # Размер может быть в разных ключах
                                     size = (properties.get('size') or 
                                            properties.get('sizeName') or
@@ -314,26 +388,6 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                            properties.get('value') or
                                            properties.get('specName') or
                                            properties.get('propertyValue'))
-                                elif isinstance(properties, list):
-                                    # Если properties - массив, ищем элемент с размером
-                                    for prop in properties:
-                                        if isinstance(prop, dict):
-                                            # Проверяем разные варианты
-                                            size_candidate = (prop.get('size') or 
-                                                            prop.get('sizeName') or
-                                                            prop.get('specValue') or
-                                                            prop.get('value') or
-                                                            prop.get('propertyValue') or
-                                                            prop.get('specName'))
-                                            # Проверяем, что это похоже на размер (содержит цифры или стандартные обозначения размеров)
-                                            if size_candidate and (any(c.isdigit() for c in str(size_candidate)) or 
-                                                                   str(size_candidate).upper() in ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'] or
-                                                                   'US' in str(size_candidate).upper() or
-                                                                   'EU' in str(size_candidate).upper() or
-                                                                   'UK' in str(size_candidate).upper() or
-                                                                   'CN' in str(size_candidate).upper()):
-                                                size = size_candidate
-                                                break
                                 
                                 # Если не нашли размер в properties, пробуем другие поля
                                 if not size:
@@ -365,17 +419,25 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         for price_item in price_list:
                                             if isinstance(price_item, dict):
                                                 if price_item.get('skuId') == sku_id:
-                                                    price_value = (price_item.get('price') or 
+                                                    # Цена может быть в price_item.money или напрямую
+                                                    price_value = (price_item.get('money') or
+                                                                 price_item.get('price') or 
                                                                  price_item.get('salePrice') or
                                                                  price_item.get('currentPrice') or
                                                                  price_item.get('priceValue'))
                                                     break
                                 
+                                # Если не нашли, используем базовую цену (для всех размеров одинаковая)
+                                if not price_value and base_price_money is not None:
+                                    price_value = base_price_money
+                                    print(f"    SKU {idx+1}: Using base price {price_value}")
+                                
                                 # Если не нашли напрямую, пробуем вложенные структуры
                                 if not price_value and isinstance(sku, dict):
                                     price_info = sku.get('priceInfo') or sku.get('price')
                                     if isinstance(price_info, dict):
-                                        price_value = (price_info.get('price') or 
+                                        price_value = (price_info.get('money') or
+                                                     price_info.get('price') or 
                                                      price_info.get('salePrice') or
                                                      price_info.get('currentPrice'))
                                 
@@ -463,9 +525,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             price_value = None
                             price_data = product_data.get('price')
                             
-                            # Если price - словарь, ищем цену внутри
+                            # Если price - словарь, ищем цену внутри (в логах видели 'money')
                             if isinstance(price_data, dict):
-                                price_value = (price_data.get('price') or 
+                                price_value = (price_data.get('money') or  # Основная цена в центах/копейках
+                                             price_data.get('price') or 
                                              price_data.get('salePrice') or
                                              price_data.get('currentPrice') or
                                              price_data.get('lowPrice') or
