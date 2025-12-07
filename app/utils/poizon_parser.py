@@ -1321,6 +1321,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     'img[src*="goods"]'
                 ]
                 
+                # Собираем все изображения, сохраняя порядок появления на странице
+                all_img_elements = []
                 for selector in gallery_selectors:
                     img_tags = soup.select(selector)
                     print(f"  Trying selector '{selector}': found {len(img_tags)} elements")
@@ -1351,11 +1353,20 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             elif img_url.startswith('/'):
                                 img_url = base_domain + img_url
                             
-                            if img_url.startswith('http') and img_url not in found_urls:
-                                found_urls.append(img_url)
-                                print(f"    Added image: {img_url[:80]}...")
-                    
-                    # Не прерываемся, собираем все
+                            if img_url.startswith('http'):
+                                # Сохраняем URL и позицию для сортировки
+                                if not any(item['url'] == img_url for item in all_img_elements):
+                                    all_img_elements.append({
+                                        'url': img_url,
+                                        'position': len(all_img_elements)
+                                    })
+                                    print(f"    Added image: {img_url[:80]}...")
+                
+                # Сортируем по порядку появления на странице и добавляем в found_urls
+                all_img_elements.sort(key=lambda x: x['position'])
+                for item in all_img_elements:
+                    if item['url'] not in found_urls:
+                        found_urls.append(item['url'])
                 
                 print(f"Found {len(found_urls)} images in HTML gallery")
             
@@ -1639,52 +1650,59 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         traceback.print_exc()
                 
                 # Агрессивный поиск: ищем размеры и цены в любых элементах с числами и ценами
-                if not html_sizes_prices:
-                    print(f"  🔍 Aggressive search: Looking for size-price pairs in HTML...")
-                    try:
-                        # Ищем все элементы, которые могут содержать размеры и цены
-                        # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
-                        page_text = soup.get_text()
-                        
-                        # Улучшенный паттерн: ищем "38 (39) 3 993 Р" или "40 (41) 3 741 Р"
-                        # Паттерн должен искать размер перед ценой, а не наоборот
-                        size_price_pattern = re.compile(
-                            r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
-                            re.IGNORECASE
-                        )
-                        
-                        matches = size_price_pattern.findall(page_text)
-                        print(f"    Found {len(matches)} potential size-price pairs")
-                        
-                        for size_str, price_str in matches:
-                            try:
-                                # Очищаем размер - оставляем запятую как есть
-                                size_clean = size_str.strip()
-                                
-                                # Очищаем цену - убираем пробелы
-                                price_clean = price_str.replace(' ', '').replace(',', '').replace('\xa0', '')
-                                price_num = float(price_clean)
-                                
-                                # Цена уже в рублях, конвертируем в копейки
-                                price_cents = int(price_num * 100)
-                                
-                                # Проверяем разумность: размер должен быть от 30 до 50, цена от 1000 до 100000 рублей
-                                size_num = float(size_str.replace(',', '.'))
-                                if 30 <= size_num <= 50 and 1000 <= price_cents <= 10000000:
-                                    # Проверяем, нет ли уже такого размера
-                                    if not any(sp['size'] == size_clean for sp in html_sizes_prices):
-                                        html_sizes_prices.append({
-                                            'size': size_clean,
-                                            'price': price_cents
-                                        })
-                                        print(f"    ✅ Found size-price pair: {size_clean} -> {price_cents} копеек ({price_num} руб)")
-                            except Exception as e:
-                                print(f"    ⚠️ Error parsing size-price pair '{size_str}' -> '{price_str}': {e}")
-                                pass
-                    except Exception as e:
-                        print(f"  Error in aggressive search: {e}")
-                        import traceback
-                        traceback.print_exc()
+                # Всегда запускаем, даже если уже есть результаты
+                print(f"  🔍 Aggressive search: Looking for size-price pairs in HTML...")
+                try:
+                    # Ищем все элементы, которые могут содержать размеры и цены
+                    # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
+                    page_text = soup.get_text()
+                    
+                    # Улучшенный паттерн: ищем "38 (39) 3 993 Р" или "40 (41) 3 741 Р" или "39,5 (40,5) 8 094 Р"
+                    # Паттерн должен искать размер перед ценой, а не наоборот
+                    size_price_pattern = re.compile(
+                        r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
+                        re.IGNORECASE
+                    )
+                    
+                    matches = size_price_pattern.findall(page_text)
+                    print(f"    Found {len(matches)} potential size-price pairs")
+                    
+                    for size_str, price_str in matches:
+                        try:
+                            # Очищаем размер - оставляем запятую как есть
+                            size_clean = size_str.strip()
+                            
+                            # Очищаем цену - убираем пробелы и неразрывные пробелы
+                            price_clean = price_str.replace(' ', '').replace(',', '').replace('\xa0', '').replace('\u2009', '')
+                            price_num = float(price_clean)
+                            
+                            # Цена уже в рублях, конвертируем в копейки
+                            price_cents = int(price_num * 100)
+                            
+                            # Проверяем разумность: размер должен быть от 30 до 50, цена от 1000 до 100000 рублей
+                            size_num = float(size_str.replace(',', '.'))
+                            if 30 <= size_num <= 50 and 1000 <= price_cents <= 10000000:
+                                # Проверяем, нет ли уже такого размера
+                                if not any(sp['size'] == size_clean for sp in html_sizes_prices):
+                                    html_sizes_prices.append({
+                                        'size': size_clean,
+                                        'price': price_cents
+                                    })
+                                    print(f"    ✅ Found size-price pair: {size_clean} -> {price_cents} копеек ({price_num} руб)")
+                                else:
+                                    # Обновляем цену, если нашли более точную
+                                    for sp in html_sizes_prices:
+                                        if sp['size'] == size_clean:
+                                            sp['price'] = price_cents
+                                            print(f"    🔄 Updated price for size {size_clean}: {price_cents} копеек")
+                                            break
+                        except Exception as e:
+                            print(f"    ⚠️ Error parsing size-price pair '{size_str}' -> '{price_str}': {e}")
+                            pass
+                except Exception as e:
+                    print(f"  Error in aggressive search: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
                 # Если есть вкладки размеров (check_gender в оригинальном коде)
                 if not html_sizes_prices:
