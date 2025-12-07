@@ -47,7 +47,7 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             return []
         
         driver.get(url)
-        time.sleep(3)  # Ждем загрузки страницы
+        time.sleep(5)  # Ждем загрузки страницы
         
         # Пробуем закрыть модальное окно, если есть
         try:
@@ -58,50 +58,216 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
         except:
             pass
         
-        # Прокручиваем страницу вниз, чтобы загрузились все элементы
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-        time.sleep(1)
+        # Прокручиваем страницу до блока с размерами
+        try:
+            size_section = driver.find_element(By.CSS_SELECTOR, '[class*="SkuPanel"], [class*="size"], [class*="Size"]')
+            driver.execute_script("arguments[0].scrollIntoView({ behavior: 'smooth', block: 'center' });", size_section)
+            time.sleep(2)
+        except:
+            # Если не нашли секцию, просто прокручиваем вниз
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+            time.sleep(2)
+        
+        # Дополнительное ожидание для загрузки динамического контента
+        time.sleep(2)
         
         sizes_prices = []
         
-        # Проверяем, есть ли вкладки размеров (как в gitpars.py)
+        # Ждем загрузки размеров и цен - используем более универсальные селекторы
         try:
-            size_buttons = WebDriverWait(driver, 5).until(
-                EC.visibility_of_all_elements_located((By.CSS_SELECTOR, 'div.SkuPanel_tabItem__MuUkW')))
-            print(f"    Found {len(size_buttons)} size tab(s), parsing each tab...")
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'div.SkuPanel_value__BAJ1p, [class*="SkuPanel_value"]')))
+        except:
+            print(f"    ⚠️ Size elements not found, waiting longer...")
+            time.sleep(2)
+        
+        # Пробуем найти размеры и цены разными способами
+        # Способ 1: Проверяем, есть ли вкладки размеров
+        try:
+            size_buttons = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_tabItem__MuUkW')
+            if size_buttons:
+                print(f"    Found {len(size_buttons)} size tab(s), parsing each tab...")
+                
+                # Парсим каждую вкладку
+                for tab_idx, tab_button in enumerate(size_buttons):
+                    try:
+                        driver.execute_script("arguments[0].click();", tab_button)
+                        time.sleep(1)
+                        
+                        # Ищем размеры и цены в первой группе
+                        size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
+                        price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                        
+                        if size_elements and price_elements:
+                            for size_elem, price_elem in zip(size_elements, price_elements):
+                                size = size_elem.get_attribute('textContent').strip()
+                                price_text = price_elem.get_attribute('textContent').strip()
+                                
+                                # Обрабатываем размер (берем RU размер до скобки)
+                                if '(' in size:
+                                    size = size.split('(')[0].strip()
+                                
+                                # Обрабатываем цену - удаляем валютные символы и неразрывные пробелы
+                                price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
+                                
+                                if price_text_clean and price_text_clean != '-':
+                                    try:
+                                        # Удаляем пробелы между цифрами (например, "5 505" -> "5505")
+                                        price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
+                                        price_num = float(price_text_clean)
+                                        # Цена уже в рублях, конвертируем в копейки
+                                        price_cents = int(price_num * 100)
+                                        
+                                        sizes_prices.append({'size': size, 'price': price_cents})
+                                        print(f"      ✅ Tab {tab_idx+1}: {size} -> {price_cents} копеек ({price_num} ₽)")
+                                    except Exception as e:
+                                        print(f"      ⚠️ Error parsing price '{price_text}' (cleaned: '{price_text_clean}') for size {size}: {e}")
+                    except Exception as e:
+                        print(f"      ⚠️ Error parsing tab {tab_idx+1}: {e}")
+                        continue
+                
+                if sizes_prices:
+                    return sizes_prices
+        except Exception as e:
+            print(f"    ⚠️ Error checking tabs: {e}")
+        
+        # Способ 2: Пробуем найти все размеры и цены напрямую (универсальный подход)
+        print(f"    Trying universal approach - finding all size and price elements...")
+        try:
+            # Пробуем разные селекторы для размеров
+            size_selectors = [
+                'div.SkuPanel_value__BAJ1p',
+                '[class*="SkuPanel_value"]',
+                '[class*="SkuPanel"][class*="value"]',
+                'div[class*="size"][class*="value"]',
+                'div[class*="Size"]'
+            ]
             
-            # Парсим каждую вкладку
-            for tab_idx, tab_button in enumerate(size_buttons):
-                try:
-                    driver.execute_script("arguments[0].click();", tab_button)
-                    time.sleep(1)
-                    
-                    # Ищем размеры и цены в первой группе
-                    size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
-                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
-                    
-                    if size_elements and price_elements:
-                        for size_elem, price_elem in zip(size_elements, price_elements):
-                            size = size_elem.get_attribute('textContent').strip()
-                            price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
+            price_selectors = [
+                'div.SkuPanel_price__KCs7G',
+                '[class*="SkuPanel_price"]',
+                '[class*="SkuPanel"][class*="price"]',
+                'div[class*="price"]'
+            ]
+            
+            size_elements = None
+            price_elements = None
+            
+            for size_sel in size_selectors:
+                size_elements = driver.find_elements(By.CSS_SELECTOR, size_sel)
+                if size_elements:
+                    print(f"    Found {len(size_elements)} size elements with selector: {size_sel}")
+                    # Выводим первые несколько размеров для отладки
+                    for i, elem in enumerate(size_elements[:3]):
+                        print(f"      Size {i+1}: {elem.get_attribute('textContent').strip()[:50]}")
+                    break
+            
+            for price_sel in price_selectors:
+                price_elements = driver.find_elements(By.CSS_SELECTOR, price_sel)
+                if price_elements:
+                    print(f"    Found {len(price_elements)} price elements with selector: {price_sel}")
+                    # Выводим первые несколько цен для отладки
+                    for i, elem in enumerate(price_elements[:3]):
+                        print(f"      Price {i+1}: {elem.get_attribute('textContent').strip()[:50]}")
+                    break
+            
+            # Если нашли элементы, парсим попарно
+            if size_elements and price_elements:
+                # Пробуем найти пары, даже если количество не совпадает
+                min_len = min(len(size_elements), len(price_elements))
+                print(f"    Processing {min_len} size-price pairs (sizes: {len(size_elements)}, prices: {len(price_elements)})...")
+                
+                for i in range(min_len):
+                    try:
+                        size_elem = size_elements[i]
+                        price_elem = price_elements[i]
+                        
+                        size = size_elem.get_attribute('textContent').strip()
+                        price_text = price_elem.get_attribute('textContent').strip()
+                        
+                        # Обрабатываем размер (берем RU размер до скобки)
+                        if '(' in size:
+                            size = size.split('(')[0].strip()
+                        
+                        # Обрабатываем цену - удаляем валютные символы
+                        price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
+                        
+                        # Удаляем пробелы между цифрами (например, "5 505" -> "5505")
+                        if price_text_clean and price_text_clean != '-':
+                            price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
                             
                             try:
-                                price_num = float(price_text.replace(',', ''))
-                                # Если цена меньше 1000, возможно это в долларах, умножаем на 12.5
-                                if price_num < 1000:
-                                    price_num = price_num * 12.5
+                                price_num = float(price_text_clean)
+                                # Цена уже в рублях, конвертируем в копейки
                                 price_cents = int(price_num * 100)
                                 
                                 sizes_prices.append({'size': size, 'price': price_cents})
-                                print(f"      ✅ Tab {tab_idx+1}: {size} -> {price_cents} копеек")
-                            except:
-                                pass
-                except Exception as e:
-                    print(f"      ⚠️ Error parsing tab {tab_idx+1}: {e}")
-                    continue
-        except:
-            # Если нет вкладок, пробуем стандартный подход
-            print(f"    No size tabs found, trying standard approach...")
+                                print(f"      ✅ {size} -> {price_cents} копеек ({price_num} ₽)")
+                            except Exception as e:
+                                print(f"      ⚠️ Error parsing price '{price_text}' (cleaned: '{price_text_clean}') for size {size}: {e}")
+                    except Exception as e:
+                        print(f"      ⚠️ Error processing element {i}: {e}")
+                        continue
+                
+                if sizes_prices:
+                    return sizes_prices
+            
+            # Если не нашли пары, пробуем найти в контейнерах или родительских элементах
+            if not sizes_prices:
+                print(f"    Trying container-based approach...")
+                # Ищем все элементы с классами, содержащими "SkuPanel"
+                all_sku_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel"]')
+                print(f"    Found {len(all_sku_elements)} elements with SkuPanel class")
+                
+                # Ищем контейнеры с размерами и ценами
+                containers = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel"][class*="group"], div[class*="size"][class*="item"], div[class*="SkuPanel"]')
+                print(f"    Found {len(containers)} potential containers")
+                
+                for container in containers:
+                    try:
+                        # Пробуем найти размер и цену внутри контейнера
+                        size_elem = None
+                        price_elem = None
+                        
+                        try:
+                            size_elem = container.find_element(By.CSS_SELECTOR, '*[class*="value"], *[class*="size"], *[class*="Size"]')
+                        except:
+                            pass
+                        
+                        try:
+                            price_elem = container.find_element(By.CSS_SELECTOR, '*[class*="price"]')
+                        except:
+                            pass
+                        
+                        if size_elem and price_elem:
+                            size = size_elem.get_attribute('textContent').strip()
+                            price_text = price_elem.get_attribute('textContent').strip()
+                            
+                            if '(' in size:
+                                size = size.split('(')[0].strip()
+                            
+                            price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
+                            
+                            if price_text_clean and price_text_clean != '-':
+                                price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
+                                
+                                try:
+                                    price_num = float(price_text_clean)
+                                    price_cents = int(price_num * 100)
+                                    sizes_prices.append({'size': size, 'price': price_cents})
+                                    print(f"      ✅ Container: {size} -> {price_cents} копеек ({price_num} ₽)")
+                                except Exception as e:
+                                    print(f"      ⚠️ Error parsing container price '{price_text}': {e}")
+                    except Exception as e:
+                        continue
+        except Exception as e:
+            print(f"    ⚠️ Error in universal approach: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Способ 3: Стандартный подход с проверкой количества меню (как в gitpars.py)
+        if not sizes_prices:
+            print(f"    Trying standard approach with menu count check...")
             try:
                 # Проверяем количество меню (как в gitpars.py)
                 check_count_menu = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_label__Vbp8t>span:nth-child(1)')
@@ -110,13 +276,6 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                 
                 if menu_count == 1:
                     # Одно меню: размеры и цены в nth-child(1)
-                    # Ждем появления элементов
-                    try:
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX')))
-                    except:
-                        pass
-                    
                     size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
                     price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
                     
@@ -125,22 +284,22 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                     if size_elements and price_elements:
                         for size_elem, price_elem in zip(size_elements, price_elements):
                             size = size_elem.get_attribute('textContent').strip()
-                            # Извлекаем только RU размер (до скобки, если есть)
                             if '(' in size:
                                 size = size.split('(')[0].strip()
-                            price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
+                            price_text = price_elem.get_attribute('textContent').strip()
+                            price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
                             
-                            try:
-                                price_num = float(price_text.replace(',', ''))
-                                if price_num < 1000:
-                                    price_num = price_num * 12.5
-                                price_cents = int(price_num * 100)
+                            if price_text_clean and price_text_clean != '-':
+                                # Удаляем пробелы между цифрами
+                                price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
                                 
-                                sizes_prices.append({'size': size, 'price': price_cents})
-                                print(f"      ✅ {size} -> {price_cents} копеек")
-                            except Exception as e:
-                                print(f"      ⚠️ Error parsing {size} -> {price_text}: {e}")
-                                pass
+                                try:
+                                    price_num = float(price_text_clean)
+                                    price_cents = int(price_num * 100)
+                                    sizes_prices.append({'size': size, 'price': price_cents})
+                                    print(f"      ✅ {size} -> {price_cents} копеек ({price_num} ₽)")
+                                except Exception as e:
+                                    print(f"      ⚠️ Error parsing {size} -> {price_text} (cleaned: '{price_text_clean}'): {e}")
                 elif menu_count == 2:
                     # Два меню (цвет): размеры и цены в nth-child(2)
                     color_buttons = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_list__OUqa1.SkuPanel_col4__UYcTN.SkuPanel_imgList__7Uem4>div')
@@ -155,22 +314,95 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                             if size_elements and price_elements:
                                 for size_elem, price_elem in zip(size_elements, price_elements):
                                     size = size_elem.get_attribute('textContent').strip()
-                                    price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
+                                    if '(' in size:
+                                        size = size.split('(')[0].strip()
+                                    price_text = price_elem.get_attribute('textContent').strip()
+                                    price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
                                     
-                                    try:
-                                        price_num = float(price_text.replace(',', ''))
-                                        if price_num < 1000:
-                                            price_num = price_num * 12.5
-                                        price_cents = int(price_num * 100)
+                                    if price_text_clean and price_text_clean != '-':
+                                        # Удаляем пробелы между цифрами
+                                        price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
                                         
-                                        sizes_prices.append({'size': size, 'price': price_cents})
-                                        print(f"      ✅ {size} -> {price_cents} копеек")
-                                    except:
-                                        pass
+                                        try:
+                                            price_num = float(price_text_clean)
+                                            price_cents = int(price_num * 100)
+                                            sizes_prices.append({'size': size, 'price': price_cents})
+                                            print(f"      ✅ {size} -> {price_cents} копеек ({price_num} ₽)")
+                                        except Exception as e:
+                                            print(f"      ⚠️ Error parsing {size} -> {price_text}: {e}")
+                                            pass
                         except:
                             continue
             except Exception as e:
                 print(f"    ⚠️ Error in standard approach: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Если не нашли размеры и цены обычными способами, пробуем через JavaScript
+        if not sizes_prices:
+            print(f"    Trying JavaScript-based approach...")
+            try:
+                # Используем JavaScript для поиска элементов на странице
+                js_code = """
+                var sizes = [];
+                var prices = [];
+                
+                // Ищем все элементы с размерами
+                var sizeElements = document.querySelectorAll('[class*="SkuPanel_value"], [class*="size"], [class*="Size"], div[class*="value"]');
+                sizeElements.forEach(function(el) {
+                    var text = el.textContent.trim();
+                    if (text && /\\d+/.test(text)) {
+                        sizes.push(text);
+                    }
+                });
+                
+                // Ищем все элементы с ценами
+                var priceElements = document.querySelectorAll('[class*="SkuPanel_price"], [class*="price"], div[class*="price"]');
+                priceElements.forEach(function(el) {
+                    var text = el.textContent.trim();
+                    if (text && (/\\d/.test(text) || text.includes('₽') || text.includes('Р'))) {
+                        prices.push(text);
+                    }
+                });
+                
+                return {sizes: sizes, prices: prices};
+                """
+                result = driver.execute_script(js_code)
+                
+                js_sizes = result.get('sizes', [])
+                js_prices = result.get('prices', [])
+                
+                print(f"    JavaScript found {len(js_sizes)} sizes and {len(js_prices)} prices")
+                
+                # Пробуем сопоставить размеры и цены
+                if js_sizes and js_prices:
+                    min_len = min(len(js_sizes), len(js_prices))
+                    for i in range(min_len):
+                        try:
+                            size_text = js_sizes[i].strip()
+                            price_text = js_prices[i].strip()
+                            
+                            # Обрабатываем размер
+                            if '(' in size_text:
+                                size = size_text.split('(')[0].strip()
+                            else:
+                                size = size_text
+                            
+                            # Обрабатываем цену
+                            price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
+                            if price_text_clean and price_text_clean != '-':
+                                price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
+                                try:
+                                    price_num = float(price_text_clean)
+                                    price_cents = int(price_num * 100)
+                                    sizes_prices.append({'size': size, 'price': price_cents})
+                                    print(f"      ✅ JS: {size} -> {price_cents} копеек ({price_num} ₽)")
+                                except:
+                                    pass
+                        except:
+                            continue
+            except Exception as e:
+                print(f"    ⚠️ Error in JavaScript approach: {e}")
         
         print(f"  ✅ Selenium found {len(sizes_prices)} size-price pairs")
         return sizes_prices
