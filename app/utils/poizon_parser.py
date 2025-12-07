@@ -683,6 +683,156 @@ async def download_image_to_base64(url: str, client: httpx.AsyncClient) -> Optio
         print(f"Error downloading image {url}: {e}")
     return None
 
+def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
+    """
+    Парсит гайд размеров через Selenium (открывает модальное окно и извлекает таблицу)
+    Возвращает словарь с колонками: EU, RU, UK, US_Женские, US_Мужские
+    """
+    try:
+        print(f"  📏 Trying to parse size guide...")
+        
+        # Ищем кнопку "Гайд размера" или "Гайд по размерам"
+        size_guide_selectors = [
+            'a[href*="size"]',
+            'button:contains("Гайд")',
+            '[class*="SizeGuide"]',
+            '[class*="size-guide"]',
+            'a:contains("размер")',
+            'span:contains("Гайд размера")',
+            'div:contains("Гайд размера")',
+        ]
+        
+        size_guide_button = None
+        for selector in size_guide_selectors:
+            try:
+                if ':contains' in selector:
+                    # Используем XPath для текстового поиска
+                    text = selector.split('"')[1] if '"' in selector else 'Гайд'
+                    xpath = f"//*[contains(text(), '{text}')]"
+                    elements = driver.find_elements(By.XPATH, xpath)
+                    if elements:
+                        size_guide_button = elements[0]
+                        print(f"    ✅ Found size guide button via XPath: {text}")
+                        break
+                else:
+                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        size_guide_button = elements[0]
+                        print(f"    ✅ Found size guide button via CSS: {selector}")
+                        break
+            except:
+                continue
+        
+        if not size_guide_button:
+            print(f"    ⚠️ Size guide button not found")
+            return None
+        
+        # Кликаем на кнопку
+        try:
+            driver.execute_script("arguments[0].click();", size_guide_button)
+            time.sleep(2)
+            print(f"    ✅ Clicked size guide button")
+        except Exception as e:
+            print(f"    ⚠️ Error clicking size guide button: {e}")
+            return None
+        
+        # Ждем появления модального окна с таблицей
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'table, [class*="table"], [class*="Table"]'))
+            )
+            time.sleep(1)
+            print(f"    ✅ Size guide modal opened")
+        except:
+            print(f"    ⚠️ Size guide modal not found")
+            return None
+        
+        # Ищем таблицу с размерами
+        table_selectors = [
+            'table',
+            '[class*="SizeGuide"] table',
+            '[class*="size-guide"] table',
+            '[class*="Table"]',
+            'div[class*="table"]',
+        ]
+        
+        table = None
+        for selector in table_selectors:
+            try:
+                tables = driver.find_elements(By.CSS_SELECTOR, selector)
+                if tables:
+                    table = tables[0]
+                    print(f"    ✅ Found size guide table via: {selector}")
+                    break
+            except:
+                continue
+        
+        if not table:
+            print(f"    ⚠️ Size guide table not found")
+            return None
+        
+        # Парсим таблицу
+        try:
+            # Получаем заголовки
+            headers = []
+            header_rows = table.find_elements(By.CSS_SELECTOR, 'thead tr th, thead tr td, tr:first-child th, tr:first-child td')
+            if not header_rows:
+                # Пробуем найти заголовки в первой строке
+                first_row = table.find_elements(By.CSS_SELECTOR, 'tr:first-child td, tr:first-child th')
+                header_rows = first_row
+            
+            for header in header_rows:
+                text = header.get_attribute('textContent').strip()
+                if text:
+                    headers.append(text)
+            
+            print(f"    📋 Found headers: {headers}")
+            
+            if not headers or len(headers) < 2:
+                print(f"    ⚠️ Not enough headers found")
+                return None
+            
+            # Получаем строки данных
+            rows = table.find_elements(By.CSS_SELECTOR, 'tbody tr, tr:not(:first-child)')
+            if not rows:
+                rows = table.find_elements(By.CSS_SELECTOR, 'tr')
+            
+            size_guide_data = []
+            for row in rows:
+                cells = row.find_elements(By.CSS_SELECTOR, 'td, th')
+                if len(cells) >= len(headers):
+                    row_data = {}
+                    for idx, cell in enumerate(cells[:len(headers)]):
+                        cell_text = cell.get_attribute('textContent').strip()
+                        header_key = headers[idx].replace(' ', '_').replace('Женские', 'US_Женские').replace('Мужские', 'US_Мужские')
+                        row_data[header_key] = cell_text
+                    
+                    if row_data:
+                        size_guide_data.append(row_data)
+            
+            if size_guide_data:
+                print(f"    ✅ Parsed {len(size_guide_data)} size guide rows")
+                return {
+                    'headers': headers,
+                    'rows': size_guide_data
+                }
+            else:
+                print(f"    ⚠️ No size guide data found")
+                return None
+                
+        except Exception as e:
+            print(f"    ⚠️ Error parsing size guide table: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        
+    except Exception as e:
+        print(f"  ⚠️ Error in _parse_size_guide_with_selenium: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
     """
     Парсит товар с thepoizon.ru по URL
@@ -731,6 +881,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             images = []
             description = ""
             sizes_prices = []  # Инициализируем список размеров
+            size_guide = None  # Инициализируем гайд размеров
             next_data = None
             
             # Ищем __NEXT_DATA__ скрипт (там все данные товара)
@@ -2288,6 +2439,27 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             if need_selenium:
                 print(f"  🚀 Using Selenium to parse sizes and prices...")
                 selenium_sizes_prices = _parse_sizes_prices_with_selenium(url)
+                
+                # Парсим гайд размеров через Selenium (используем тот же драйвер, если он еще открыт)
+                size_guide = None
+                try:
+                    # Создаем новый драйвер для парсинга гайда размеров
+                    driver = _create_selenium_driver()
+                    if driver:
+                        driver.get(url)
+                        time.sleep(5)
+                        # Пробуем закрыть модальное окно, если есть
+                        try:
+                            button = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
+                            driver.execute_script("arguments[0].click();", button)
+                            time.sleep(1)
+                        except:
+                            pass
+                        size_guide = _parse_size_guide_with_selenium(driver)
+                        driver.quit()
+                except Exception as e:
+                    print(f"  ⚠️ Error parsing size guide: {e}")
                 if selenium_sizes_prices:
                     unique_selenium_prices = set(item['price'] for item in selenium_sizes_prices if item['price'] is not None)
                     if len(unique_selenium_prices) > 1:  # Если нашли разные цены
@@ -2357,12 +2529,22 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             else:
                 print("WARNING: Description is empty - no sizes and prices found!")
             
-            return {
+            result = {
                 'title': title[:500],  # Ограничиваем длину
                 'price_cents': final_price,
                 'description': description[:2000] if description else '',  # Размеры и цены сохраняются здесь
                 'images_base64': images  # Все найденные изображения (до 10)
             }
+            
+            # Добавляем гайд размеров, если он был спарсен
+            if size_guide:
+                import json
+                result['size_guide'] = json.dumps(size_guide)
+                print(f"  ✅ Size guide parsed and added to result")
+            else:
+                result['size_guide'] = None
+            
+            return result
             
     except httpx.HTTPStatusError as e:
         error_msg = f"HTTP {e.response.status_code}: Не удалось загрузить страницу thepoizon.ru. Сайт может блокировать запросы или URL неверный."

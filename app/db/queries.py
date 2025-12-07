@@ -69,6 +69,7 @@ def get_products(
 
 def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
     """Получить товар по ID"""
+    import json
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -76,7 +77,15 @@ def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
                 (product_id,)
             )
             row = cur.fetchone()
-            return dict(row) if row else None
+            if row:
+                result = dict(row)
+                # Парсим JSON обратно
+                if isinstance(result.get('images_base64'), str):
+                    result['images_base64'] = json.loads(result['images_base64'])
+                if isinstance(result.get('size_guide'), str):
+                    result['size_guide'] = json.loads(result['size_guide'])
+                return result
+            return None
 
 
 def get_product_by_source_url(source_url: str) -> Optional[Dict[str, Any]]:
@@ -105,8 +114,8 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO products (category, season, title, description, price_cents, images_base64, source_url)
-                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s, %(source_url)s)
+                INSERT INTO products (category, season, title, description, price_cents, images_base64, source_url, size_guide)
+                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s, %(source_url)s, %(size_guide)s)
                 RETURNING *
                 """,
                 {
@@ -116,7 +125,8 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
                     'description': product_data.get('description', ''),
                     'price_cents': product_data['price_cents'],
                     'images_base64': json.dumps(product_data.get('images_base64', [])),
-                    'source_url': product_data.get('source_url')
+                    'source_url': product_data.get('source_url'),
+                    'size_guide': product_data.get('size_guide')
                 }
             )
             row = cur.fetchone()
@@ -124,6 +134,8 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
             # Парсим JSON обратно
             if isinstance(result.get('images_base64'), str):
                 result['images_base64'] = json.loads(result['images_base64'])
+            if isinstance(result.get('size_guide'), str):
+                result['size_guide'] = json.loads(result['size_guide'])
             return result
 
 
@@ -160,6 +172,9 @@ def update_product(
             if 'images_base64' in updates:
                 placeholders.append('images_base64 = %s')
                 params.append(json.dumps(updates['images_base64']))
+            if 'size_guide' in updates:
+                placeholders.append('size_guide = %s')
+                params.append(updates['size_guide'])
             
             if not placeholders:
                 return get_product_by_id(product_id)
@@ -174,6 +189,8 @@ def update_product(
             result = dict(row)
             if isinstance(result.get('images_base64'), str):
                 result['images_base64'] = json.loads(result['images_base64'])
+            if isinstance(result.get('size_guide'), str):
+                result['size_guide'] = json.loads(result['size_guide'])
             return result
 
 
