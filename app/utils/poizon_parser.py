@@ -1051,9 +1051,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                                     prop_id_str = str(prop_id)
                                                                     if prop_id_str in prop_value_price_mapping:
                                                                         price_val = prop_value_price_mapping[prop_id_str]
-                                                                        if sku_id and (sku_id not in sku_price_mapping or (base_price_money and sku_price_mapping.get(sku_id) == base_price_money)):
-                                                                            sku_price_mapping[sku_id] = price_val
-                                                                            print(f"          ✅ Linked: propertyValueId={prop_id_str} -> skuId={sku_id}, price={price_val}")
+                                                                        if sku_id:
+                                                                            # Если уже есть цена для этого skuId, обновляем только если новая отличается
+                                                                            if sku_id in sku_price_mapping:
+                                                                                existing_price = sku_price_mapping[sku_id]
+                                                                                if price_val != existing_price:
+                                                                                    sku_price_mapping[sku_id] = price_val
+                                                                                    print(f"          🔄 Updated price for skuId={sku_id}: {existing_price} -> {price_val}")
+                                                                            else:
+                                                                                sku_price_mapping[sku_id] = price_val
+                                                                                print(f"          ✅ Linked: propertyValueId={prop_id_str} -> skuId={sku_id}, price={price_val}")
                             
                             # Также пробуем найти массив цен в product_data
                             price_list = None
