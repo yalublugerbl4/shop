@@ -2439,27 +2439,6 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             if need_selenium:
                 print(f"  🚀 Using Selenium to parse sizes and prices...")
                 selenium_sizes_prices = _parse_sizes_prices_with_selenium(url)
-                
-                # Парсим гайд размеров через Selenium (используем тот же драйвер, если он еще открыт)
-                size_guide = None
-                try:
-                    # Создаем новый драйвер для парсинга гайда размеров
-                    driver = _create_selenium_driver()
-                    if driver:
-                        driver.get(url)
-                        time.sleep(5)
-                        # Пробуем закрыть модальное окно, если есть
-                        try:
-                            button = WebDriverWait(driver, 5).until(
-                                EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
-                            driver.execute_script("arguments[0].click();", button)
-                            time.sleep(1)
-                        except:
-                            pass
-                        size_guide = _parse_size_guide_with_selenium(driver)
-                        driver.quit()
-                except Exception as e:
-                    print(f"  ⚠️ Error parsing size guide: {e}")
                 if selenium_sizes_prices:
                     unique_selenium_prices = set(item['price'] for item in selenium_sizes_prices if item['price'] is not None)
                     if len(unique_selenium_prices) > 1:  # Если нашли разные цены
@@ -2469,6 +2448,33 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         print(f"  ⚠️ Selenium found sizes but all prices are still the same")
                 else:
                     print(f"  ⚠️ Selenium didn't find sizes/prices, using existing data if available")
+            
+            # Парсим гайд размеров через Selenium (всегда, независимо от того, использовали ли Selenium для размеров)
+            print(f"  📏 [SIZE GUIDE] Starting size guide parsing...")
+            print(f"  📏 Trying to parse size guide with Selenium...")
+            try:
+                driver = _create_selenium_driver()
+                if driver:
+                    driver.get(url)
+                    time.sleep(5)
+                    # Пробуем закрыть модальное окно, если есть
+                    try:
+                        button = WebDriverWait(driver, 5).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
+                        driver.execute_script("arguments[0].click();", button)
+                        time.sleep(1)
+                    except:
+                        pass
+                    size_guide = _parse_size_guide_with_selenium(driver)
+                    driver.quit()
+                    if size_guide:
+                        print(f"  ✅ Size guide parsed successfully: {len(size_guide.get('rows', []))} rows")
+                    else:
+                        print(f"  ⚠️ Size guide not found on page")
+            except Exception as e:
+                print(f"  ⚠️ Error parsing size guide: {e}")
+                import traceback
+                traceback.print_exc()
             
             # Формируем описание из размеров и цен (только из Selenium или __NEXT_DATA__)
             if sizes_prices:
@@ -2529,6 +2535,9 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             else:
                 print("WARNING: Description is empty - no sizes and prices found!")
             
+            # Проверяем, был ли спарсен гайд размеров
+            print(f"  🔍 Size guide status: {'parsed' if size_guide else 'not parsed'}")
+            
             result = {
                 'title': title[:500],  # Ограничиваем длину
                 'price_cents': final_price,
@@ -2540,9 +2549,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             if size_guide:
                 import json
                 result['size_guide'] = json.dumps(size_guide)
-                print(f"  ✅ Size guide parsed and added to result")
+                print(f"  ✅ Size guide parsed and added to result ({len(size_guide.get('rows', []))} rows)")
             else:
                 result['size_guide'] = None
+                print(f"  ⚠️ Size guide is None, not adding to result")
             
             return result
             
