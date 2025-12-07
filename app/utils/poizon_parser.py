@@ -942,17 +942,19 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     print(f"          ✅ Mapped price from authPrice: skuId={sku_id_dto}, price={price_val}")
                                         
                                         # Особый случай: levelOneMinPriceSkus может содержать маппинг propertyValueId -> цены
-                                        # ВАЖНО: levelOneMinPriceSkus содержит только минимальную цену для одного propertyValueId,
-                                        # НЕ индивидуальные цены для каждого размера! Нужно искать цены в других местах.
+                                        # ВАЖНО: levelOneMinPriceSkus содержит цены для каждого propertyValueId (размера)
+                                        # Нужно связать propertyValueId -> price, затем propertyValueId -> SKU -> размер
                                         elif key == 'levelOneMinPriceSkus':
                                             print(f"        🔍 Analyzing levelOneMinPriceSkus structure...")
-                                            print(f"        ⚠️ NOTE: levelOneMinPriceSkus usually contains only min price, not individual prices per size")
+                                            prop_value_price_mapping = {}  # propertyValueId -> price
                                             for prop_value_id, price_info in value.items():
                                                 print(f"          propertyValueId={prop_value_id}, price_info type={type(price_info)}")
                                                 if isinstance(price_info, dict):
                                                     print(f"            price_info keys: {list(price_info.keys())[:10]}")
                                                     # Ищем цену в структуре - minPrice может быть словарем
                                                     min_price_obj = price_info.get('minPrice')
+                                                    price_val = None
+                                                    
                                                     if isinstance(min_price_obj, dict):
                                                         # Извлекаем minUnitVal (уже в копейках)
                                                         price_val = min_price_obj.get('minUnitVal')
@@ -968,41 +970,59 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                                         price_val = int(amount_num * 100)  # В рублях
                                                                 except:
                                                                     pass
-                                                    else:
-                                                        price_val = min_price_obj
+                                                    elif isinstance(min_price_obj, (int, float)):
+                                                        price_val = int(min_price_obj) if min_price_obj >= 1000 else int(min_price_obj * 100)
                                                     
                                                     # Если не нашли, пробуем authPrice
                                                     if not price_val:
                                                         auth_price_obj = price_info.get('authPrice')
                                                         if isinstance(auth_price_obj, dict):
                                                             price_val = auth_price_obj.get('minUnitVal') or auth_price_obj.get('amount')
-                                                        else:
-                                                            price_val = auth_price_obj
+                                                            if price_val and isinstance(price_val, (int, float)) and price_val < 1000:
+                                                                price_val = int(price_val * 100)
+                                                        elif isinstance(auth_price_obj, (int, float)):
+                                                            price_val = int(auth_price_obj) if auth_price_obj >= 1000 else int(auth_price_obj * 100)
+                                                    
+                                                    # Также пробуем skuId из price_info и сразу связываем
+                                                    sku_id_from_price_info = price_info.get('skuId') or price_info.get('sourceSkuId')
                                                     
                                                     if price_val:
-                                                        # ВАЖНО: levelOneMinPriceSkus содержит только минимальную цену,
-                                                        # НЕ используем её для всех SKU, только как fallback
-                                                        print(f"          Found min price in levelOneMinPriceSkus: {price_val} (will use as fallback only)")
-                                                        # НЕ добавляем в маппинг, чтобы не перезаписать индивидуальные цены
+                                                        # Сохраняем маппинг propertyValueId -> price
+                                                        prop_value_price_mapping[str(prop_value_id)] = price_val
+                                                        print(f"          ✅ Found price in levelOneMinPriceSkus: propertyValueId={prop_value_id}, price={price_val}")
+                                                        
+                                                        # Если есть skuId, сразу связываем
+                                                        if sku_id_from_price_info:
+                                                            sku_price_mapping[sku_id_from_price_info] = price_val
+                                                            print(f"          ✅ Mapped price via skuId: propertyValueId={prop_value_id} -> skuId={sku_id_from_price_info}, price={price_val}")
                                                 elif isinstance(price_info, (int, float, str)):
                                                     # Возможно, прямое значение цены
                                                     try:
                                                         price_num = float(price_info)
                                                         if price_num > 100:  # Разумная цена
-                                                            # Находим все SKU с этим propertyValueId
-                                                            for sku_item in skus:
-                                                                sku_props = sku_item.get('properties', [])
-                                                                if isinstance(sku_props, list):
-                                                                    for prop in sku_props:
-                                                                        if isinstance(prop, dict):
-                                                                            prop_id = prop.get('propertyValueId')
-                                                                            if prop_id == prop_value_id or str(prop_id) == str(prop_value_id):
-                                                                                sku_id_match = sku_item.get('skuId')
-                                                                                if sku_id_match and sku_id_match not in sku_price_mapping:
-                                                                                    sku_price_mapping[sku_id_match] = price_num
-                                                                                    print(f"          ✅ Mapped price (direct): propertyValueId={prop_value_id} -> skuId={sku_id_match}, price={price_num}")
+                                                            price_val = int(price_num) if price_num >= 1000 else int(price_num * 100)
+                                                            prop_value_price_mapping[str(prop_value_id)] = price_val
+                                                            print(f"          ✅ Found direct price: propertyValueId={prop_value_id}, price={price_val}")
                                                     except:
                                                         pass
+                                            
+                                            # Теперь связываем propertyValueId -> SKU через properties
+                                            if prop_value_price_mapping:
+                                                print(f"        🔗 Linking {len(prop_value_price_mapping)} propertyValueId prices to SKUs...")
+                                                for sku_item in skus:
+                                                    sku_id = sku_item.get('skuId')
+                                                    sku_props = sku_item.get('properties', [])
+                                                    if isinstance(sku_props, list):
+                                                        for prop in sku_props:
+                                                            if isinstance(prop, dict):
+                                                                prop_id = prop.get('propertyValueId')
+                                                                if prop_id:
+                                                                    prop_id_str = str(prop_id)
+                                                                    if prop_id_str in prop_value_price_mapping:
+                                                                        price_val = prop_value_price_mapping[prop_id_str]
+                                                                        if sku_id and (sku_id not in sku_price_mapping or (base_price_money and sku_price_mapping.get(sku_id) == base_price_money)):
+                                                                            sku_price_mapping[sku_id] = price_val
+                                                                            print(f"          ✅ Linked: propertyValueId={prop_id_str} -> skuId={sku_id}, price={price_val}")
                             
                             # Также пробуем найти массив цен в product_data
                             price_list = None
