@@ -786,10 +786,24 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             
             if not modal_appeared:
                 print(f"    ⚠️ Modal window not found after waiting, but continuing to search for table...")
-                time.sleep(2)  # Даем еще немного времени
+                # Пробуем еще раз с большим временем ожидания
+                try:
+                    # Пробуем найти модальное окно через JavaScript
+                    modal_exists = driver.execute_script("""
+                        return document.querySelector('.ant-modal') !== null || 
+                               document.querySelector('[class*="modal"]') !== null ||
+                               document.querySelector('[role="dialog"]') !== null;
+                    """)
+                    if modal_exists:
+                        print(f"    ✅ Modal window found via JavaScript")
+                        modal_appeared = True
+                        time.sleep(3)
+                except:
+                    pass
+                time.sleep(3)  # Даем еще немного времени
         except Exception as e:
             print(f"    ⚠️ Error waiting for modal: {e}")
-            time.sleep(2)
+            time.sleep(3)
         
         # Ждем появления модального окна с таблицей (пробуем разные селекторы)
         modal_found = False
@@ -2671,31 +2685,33 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             # Скачиваем и конвертируем изображения (пропускаем первое, фильтруем AI-изображения)
             if found_urls:
-                # Фильтруем изображения: убираем AI-изображения, пропускаем первое
+                # Фильтруем изображения: убираем AI-изображения, пропускаем первое (только если изображений больше 1)
                 images_to_download = []
                 ai_images = []
                 
-                for idx, img_url in enumerate(found_urls):
+                # Сначала фильтруем AI-изображения
+                filtered_urls = []
+                for img_url in found_urls:
                     img_url_lower = img_url.lower()
-                    
-                    # Пропускаем AI-изображения
                     if 'ai/generate' in img_url_lower or 'ai_generate' in img_url_lower:
                         ai_images.append(img_url)
-                        continue
-                    
-                    # Пропускаем только AI-изображения
-                    if 'ai/generate' in img_url_lower or 'ai_generate' in img_url_lower:
                         print(f"  ⏭️ Skipping AI image: {img_url[:80]}...")
                         continue
-                    
-                    # Пропускаем первое изображение (как просил пользователь)
-                    if idx == 0:
-                        print(f"  ⏭️ Skipping first image: {img_url[:80]}...")
-                        continue
-                    
-                    images_to_download.append(img_url)
-                    if len(images_to_download) >= 10:
-                        break
+                    filtered_urls.append(img_url)
+                
+                # Если после фильтрации осталось только одно изображение, не пропускаем его
+                if len(filtered_urls) == 1:
+                    images_to_download = filtered_urls
+                    print(f"  ℹ️ Only 1 image found, not skipping it")
+                else:
+                    # Пропускаем первое изображение только если изображений больше 1
+                    for idx, img_url in enumerate(filtered_urls):
+                        if idx == 0:
+                            print(f"  ⏭️ Skipping first image: {img_url[:80]}...")
+                            continue
+                        images_to_download.append(img_url)
+                        if len(images_to_download) >= 10:
+                            break
                 
                 # Если реальных изображений мало, добавляем AI-изображения в конец
                 if len(images_to_download) < 5 and ai_images:
@@ -2802,10 +2818,49 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             # Формируем описание из размеров и цен (только из Selenium или __NEXT_DATA__)
             if sizes_prices:
+                # Убираем дубликаты размеров - группируем по размеру и берем один вариант (с минимальной ценой или первый)
+                unique_sizes = {}
+                for item in sizes_prices:
+                    size = item['size']
+                    price = item['price']
+                    
+                    if size not in unique_sizes:
+                        unique_sizes[size] = item
+                    else:
+                        # Если уже есть такой размер, выбираем вариант с ценой (если есть) или с минимальной ценой
+                        existing = unique_sizes[size]
+                        if price is not None:
+                            if existing['price'] is None:
+                                # Заменяем на вариант с ценой
+                                unique_sizes[size] = item
+                            elif price < existing['price']:
+                                # Берем вариант с минимальной ценой
+                                unique_sizes[size] = item
+                        # Если оба без цены или текущий без цены, оставляем существующий
+                
+                sizes_prices = list(unique_sizes.values())
+                print(f"  📊 Removed duplicates, {len(sizes_prices)} unique sizes")
+                
                 # Сортируем размеры от меньшего к большему
                 def sort_key(item):
                     size_str = item['size'].split('(')[0].strip()  # Берем только RU размер
                     try:
+                        # Поддерживаем дроби в размерах (⅔, ⅓ и т.д.)
+                        # Словарь для конвертации Unicode дробей
+                        fraction_map = {
+                            '⅓': 0.333, '⅔': 0.667, '⅛': 0.125, '⅜': 0.375,
+                            '⅝': 0.625, '⅞': 0.875, '¼': 0.25, '¾': 0.75, '½': 0.5
+                        }
+                        
+                        # Ищем дробь в размере
+                        fraction_match = re.search(r'(\d+)\s*([⅓⅔⅛⅜⅝⅞¼¾½])', size_str)
+                        if fraction_match:
+                            whole = int(fraction_match.group(1))
+                            fraction_char = fraction_match.group(2)
+                            fraction_decimal = fraction_map.get(fraction_char, 0)
+                            return whole + fraction_decimal
+                        
+                        # Обычный формат с запятой/точкой
                         return float(size_str.replace(',', '.'))
                     except:
                         return 0
