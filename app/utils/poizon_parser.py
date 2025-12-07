@@ -592,6 +592,80 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             except:
                 pass
 
+def _extract_sizes_prices_from_html(soup: BeautifulSoup, html_text: str) -> list:
+    """Агрессивно извлекает размеры и цены из HTML-текста через регулярные выражения"""
+    sizes_prices = []
+    try:
+        # Получаем весь текст страницы
+        page_text = soup.get_text() if soup else html_text
+        
+        # Паттерн для поиска пар "размер (eu) цена ₽"
+        # Примеры: "34,5 (35,5) 17 830 ₽", "41,5 (42,5) 8 412 ₽"
+        patterns = [
+            # Паттерн 1: размер с EU в скобках, затем цена
+            re.compile(r'(\d+[,.]?\d*)\s*\(\d+[,.]?\d*\)\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽Р]', re.IGNORECASE),
+            # Паттерн 2: просто размер, затем цена (но рядом должен быть размер в скобках где-то)
+            re.compile(r'(\d+[,.]?\d*)\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽Р]', re.IGNORECASE),
+        ]
+        
+        found_pairs = {}
+        
+        for pattern in patterns:
+            matches = pattern.finditer(page_text)
+            for match in matches:
+                try:
+                    size_text = match.group(1).strip()
+                    price_text = match.group(2).strip()
+                    
+                    # Нормализуем размер (заменяем точку на запятую)
+                    size = size_text.replace('.', ',')
+                    
+                    # Очищаем цену от пробелов
+                    price_clean = price_text.replace(' ', '').replace(',', '').replace('\xa0', '')
+                    
+                    # Проверяем, что размер в разумном диапазоне (для обуви)
+                    try:
+                        size_num = float(size.replace(',', '.'))
+                        if size_num < 15 or size_num > 60:  # Неразумный размер для обуви
+                            continue
+                    except:
+                        continue
+                    
+                    # Парсим цену
+                    try:
+                        price_num = float(price_clean)
+                        if price_num < 100 or price_num > 100000:  # Неразумная цена
+                            continue
+                        
+                        price_cents = int(price_num * 100)
+                        
+                        # Сохраняем пару, если еще не было такого размера или цена другая
+                        if size not in found_pairs or found_pairs[size]['price'] != price_cents:
+                            found_pairs[size] = {
+                                'size': size,
+                                'price': price_cents
+                            }
+                    except Exception as e:
+                        continue
+                except Exception as e:
+                    continue
+        
+        # Преобразуем в список
+        sizes_prices = list(found_pairs.values())
+        
+        if sizes_prices:
+            print(f"    ✅ Found {len(sizes_prices)} size-price pairs in HTML text")
+            for item in sizes_prices[:5]:  # Показываем первые 5
+                print(f"      {item['size']} -> {item['price']} копеек ({item['price']/100} ₽)")
+        
+    except Exception as e:
+        print(f"    ⚠️ Error extracting sizes/prices from HTML: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return sizes_prices
+
+
 async def download_image_to_base64(url: str, client: httpx.AsyncClient) -> Optional[str]:
     """Скачивает изображение и конвертирует в base64"""
     try:
@@ -2187,25 +2261,42 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             # Если у нас уже есть sizes_prices из __NEXT_DATA__ но все цены одинаковые, 
             # или если размеры вообще не найдены, используем Selenium
             need_selenium = False
+            need_html_search = False
             if sizes_prices:
                 # Проверяем, все ли цены одинаковые
-                unique_prices = set(item['price'] for item in sizes_prices)
+                unique_prices = set(item['price'] for item in sizes_prices if item['price'] is not None)
                 if len(unique_prices) == 1:
                     need_selenium = True
-                    print(f"  ⚠️ All sizes have the same price ({list(unique_prices)[0]}), trying to find individual prices with Selenium...")
+                    need_html_search = True
+                    print(f"  ⚠️ All sizes have the same price ({list(unique_prices)[0]}), trying to find individual prices...")
             else:
                 need_selenium = True
-                print(f"  ⚠️ No sizes found in __NEXT_DATA__, trying Selenium...")
+                need_html_search = True
+                print(f"  ⚠️ No sizes found in __NEXT_DATA__, trying alternative methods...")
+            
+            # Сначала пробуем агрессивный поиск в HTML
+            if need_html_search:
+                print(f"  🔍 Trying aggressive HTML text search for size-price pairs...")
+                html_sizes_prices = _extract_sizes_prices_from_html(soup, response.text)
+                if html_sizes_prices:
+                    unique_html_prices = set(item['price'] for item in html_sizes_prices if item['price'] is not None)
+                    if len(unique_html_prices) > 1:  # Если нашли разные цены
+                        print(f"  ✅ Found {len(html_sizes_prices)} size-price pairs from HTML (with {len(unique_html_prices)} different prices)")
+                        sizes_prices = html_sizes_prices
+                        need_selenium = False  # Не нужно использовать Selenium, если нашли в HTML
             
             if need_selenium:
-                print(f"  🚀 Using ONLY Selenium to parse sizes and prices...")
+                print(f"  🚀 Using Selenium to parse sizes and prices...")
                 selenium_sizes_prices = _parse_sizes_prices_with_selenium(url)
                 if selenium_sizes_prices:
-                    print(f"  ✅ Got {len(selenium_sizes_prices)} size-price pairs from Selenium")
-                    # Заменяем размеры на те, что получили из Selenium
-                    sizes_prices = selenium_sizes_prices
+                    unique_selenium_prices = set(item['price'] for item in selenium_sizes_prices if item['price'] is not None)
+                    if len(unique_selenium_prices) > 1:  # Если нашли разные цены
+                        print(f"  ✅ Got {len(selenium_sizes_prices)} size-price pairs from Selenium (with {len(unique_selenium_prices)} different prices)")
+                        sizes_prices = selenium_sizes_prices
+                    else:
+                        print(f"  ⚠️ Selenium found sizes but all prices are still the same")
                 else:
-                    print(f"  ⚠️ Selenium didn't find sizes/prices, using __NEXT_DATA__ data if available")
+                    print(f"  ⚠️ Selenium didn't find sizes/prices, using existing data if available")
             
             # Формируем описание из размеров и цен (только из Selenium или __NEXT_DATA__)
             if sizes_prices:
