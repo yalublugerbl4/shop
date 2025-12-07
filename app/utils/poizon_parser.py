@@ -947,12 +947,15 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                     print(f"    ℹ️ Found {len(tables)} table(s) via: {selector}")
                     # Если найдено несколько таблиц, берем ту, которая содержит заголовки размеров
                     for t in tables:
-                        table_text = t.get_attribute('textContent') or ''
-                        # Проверяем наличие ключевых слов размеров
-                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR', 'Соответствие', 'стопе']):
-                            table = t
-                            print(f"    ✅ Found size guide table via: {selector} (contains size keywords)")
-                            break
+                        try:
+                            table_text = t.get_attribute('textContent') or ''
+                            # Проверяем наличие ключевых слов размеров
+                            if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR', 'Соответствие', 'стопе', 'длине']):
+                                table = t
+                                print(f"    ✅ Found size guide table via: {selector} (contains size keywords)")
+                                break
+                        except:
+                            continue
                     if not table:
                         # Если не нашли по ключевым словам, берем первую таблицу
                         table = tables[0]
@@ -2811,7 +2814,11 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         # Создаем словарь для быстрого поиска размеров из HTML
                         html_sizes_dict = {item['size']: item for item in html_sizes_prices}
                         
-                        # Обновляем цены в существующих размерах из __NEXT_DATA__, если они есть в HTML
+                        # Если все цены были одинаковые, то размеры, которых нет в HTML, должны получить None
+                        all_same_price = len(unique_prices) == 1 if sizes_prices else False
+                        base_price = list(unique_prices)[0] if unique_prices else None
+                        
+                        # Обновляем цены в существующих размерах из __NEXT_DATA__
                         for item in sizes_prices:
                             size_key = item['size']
                             if size_key in html_sizes_dict:
@@ -2820,6 +2827,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 if html_item['price'] is not None:
                                     item['price'] = html_item['price']
                                     print(f"    ✅ Updated price for size {size_key} from HTML: {html_item['price']/100} ₽")
+                            elif all_same_price and item['price'] == base_price:
+                                # Если размер не найден в HTML и все цены были одинаковые, ставим None
+                                item['price'] = None
+                                print(f"    ⚠️ Size {size_key} not found in HTML, setting price to None")
                         
                         # Добавляем размеры из HTML, которых нет в __NEXT_DATA__
                         existing_sizes = {item['size'] for item in sizes_prices}
