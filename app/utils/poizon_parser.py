@@ -386,21 +386,11 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             print(f"  ⏭️ Skipping AI-generated image {idx+1}: {img_url[:80]}...")
                                             continue
                                         
-                                        # Пропускаем технические изображения, схемы, чертежи
-                                        skip_keywords = [
-                                            'wash_intro', 'wash', 'intro', 'info', 'instruction',
-                                            'technical', 'schematic', 'drawing', 'diagram',
-                                            'size', 'sizing', 'chart', 'guide'
-                                        ]
-                                        if any(keyword in img_url_lower for keyword in skip_keywords):
-                                            print(f"  ⏭️ Skipping technical/info image {idx+1}: {img_url[:80]}...")
-                                            continue
-                                        
-                                        # Пропускаем изображения с genericType содержащим WASH, INTRO, INFO
+                                        # Пропускаем только изображения с genericType=WASH_INTRO_INFO (инструкция по стирке)
                                         if isinstance(img, dict):
-                                            generic_type = str(img.get('genericType', '')).lower()
-                                            if any(keyword in generic_type for keyword in ['wash', 'intro', 'info', 'instruction']):
-                                                print(f"  ⏭️ Skipping image {idx+1} (genericType={img.get('genericType')}): {img_url[:80]}...")
+                                            generic_type = str(img.get('genericType', '')).upper()
+                                            if generic_type == 'WASH_INTRO_INFO_ALL' or 'WASH_INTRO_INFO' in generic_type:
+                                                print(f"  ⏭️ Skipping wash instruction image {idx+1} (genericType={img.get('genericType')}): {img_url[:80]}...")
                                                 continue
                                         
                                         # Нормализуем URL
@@ -1620,16 +1610,9 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         ai_images.append(img_url)
                         continue
                     
-                    # Пропускаем технические изображения, схемы, чертежи
-                    skip_keywords = [
-                        'technical', 'schematic', 'drawing', 'diagram', 'blueprint',
-                        'wash_intro', 'wash', 'intro', 'info', 'instruction',
-                        'size', 'sizing', 'chart', 'guide',
-                        'icon', 'logo', 'badge', 'watermark',
-                        'placeholder', 'default', 'empty'
-                    ]
-                    if any(keyword in img_url_lower for keyword in skip_keywords):
-                        print(f"  ⏭️ Skipping technical/info image: {img_url[:80]}...")
+                    # Пропускаем только AI-изображения
+                    if 'ai/generate' in img_url_lower or 'ai_generate' in img_url_lower:
+                        print(f"  ⏭️ Skipping AI image: {img_url[:80]}...")
                         continue
                     
                     # Пропускаем первое изображение (как просил пользователь)
@@ -1690,64 +1673,45 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     need_html_prices = True
                     print(f"  ⚠️ All sizes have the same price ({list(unique_prices)[0]}), trying to find individual prices from HTML...")
             
-            # Используем Selenium для парсинга размеров и цен, если они все одинаковые
-            if need_html_prices:
+            # Используем ТОЛЬКО Selenium для парсинга размеров и цен (как просил пользователь)
+            if need_html_prices or not sizes_prices:
+                print(f"  🚀 Using ONLY Selenium to parse sizes and prices...")
                 selenium_sizes_prices = _parse_sizes_prices_with_selenium(url)
                 if selenium_sizes_prices:
                     print(f"  ✅ Got {len(selenium_sizes_prices)} size-price pairs from Selenium")
-                    # Объединяем с существующими размерами
-                    if sizes_prices:
-                        selenium_price_map = {item['size']: item['price'] for item in selenium_sizes_prices}
-                        for item in sizes_prices:
-                            size_key = item['size']
-                            if size_key in selenium_price_map:
-                                item['price'] = selenium_price_map[size_key]
-                                print(f"    ✅ Updated price for size {size_key}: {item['price']} копеек")
-                    else:
-                        sizes_prices = selenium_sizes_prices
+                    # Заменяем размеры на те, что получили из Selenium
+                    sizes_prices = selenium_sizes_prices
+                else:
+                    print(f"  ⚠️ Selenium didn't find sizes/prices, using __NEXT_DATA__ data")
             
-            if not description or need_html_prices:
-                print("Searching for sizes and prices using SkuPanel selectors...")
-                
-                # Сначала проверим, есть ли вообще элементы SkuPanel на странице
-                sku_panel_elements = soup.select('div[class*="SkuPanel"]')
-                print(f"  DEBUG: Found {len(sku_panel_elements)} elements with class containing 'SkuPanel'")
-                
-                # Проверяем количество меню (как в оригинальном коде)
-                check_count_menu = soup.select('div.SkuPanel_label__Vbp8t>span:nth-child(1)')
-                menu_count = len(check_count_menu)
-                
-                print(f"  Found {menu_count} menu(s) in SkuPanel_label__Vbp8t")
-                
-                # Дополнительная диагностика - проверим все возможные селекторы
-                debug_selectors = {
-                    'SkuPanel_group': soup.select('div.SkuPanel_group__egmoX'),
-                    'SkuPanel_value': soup.select('div.SkuPanel_value__BAJ1p'),
-                    'SkuPanel_price': soup.select('div.SkuPanel_price__KCs7G'),
-                    'SkuPanel_label': soup.select('div.SkuPanel_label__Vbp8t'),
-                }
-                for name, elements in debug_selectors.items():
-                    print(f"  DEBUG: {name} elements found: {len(elements)}")
-                    if elements and len(elements) > 0:
-                        print(f"    First element text: {elements[0].get_text(strip=True)[:100]}")
-                
-                if menu_count == 1:
-                    # Одно меню: размеры и цены в nth-child(1)
-                    print(f"  Trying menu_count=1 approach...")
+            # Убираем HTML парсинг - используем только Selenium
+            # HTML парсинг больше не используется - все делаем через Selenium
+            
+            # Формируем описание из размеров и цен (только из Selenium или __NEXT_DATA__)
+            if sizes_prices:
+                # Сортируем размеры от меньшего к большему
+                def sort_key(item):
+                    size_str = item['size'].split('(')[0].strip()  # Берем только RU размер
                     try:
-                        # Пробуем разные варианты селекторов
-                        size_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
-                        price_elements = soup.select('div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
-                        
-                        # Если не нашли, пробуем без nth-child
-                        if not size_elements:
-                            size_elements = soup.select('div.SkuPanel_group__egmoX div.SkuPanel_value__BAJ1p')
-                        if not price_elements:
-                            price_elements = soup.select('div.SkuPanel_group__egmoX div.SkuPanel_price__KCs7G')
-                        
-                        print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
-                        
-                        if size_elements and price_elements:
+                        return float(size_str.replace(',', '.'))
+                    except:
+                        return 0
+                
+                sizes_prices.sort(key=sort_key)
+                print(f"  📊 Sorted {len(sizes_prices)} sizes from smallest to largest")
+                
+                description_lines = ["Размеры и цены:"]
+                for item in sizes_prices:
+                    price_rub = item['price'] / 100
+                    description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                description = "\n".join(description_lines)
+                print(f"Created description with {len(sizes_prices)} sizes")
+            else:
+                description = ""
+            
+            # Все HTML-парсинг удален - используем только Selenium
+            
+            if not title:
                             sizes = [elem.get_text(strip=True) for elem in size_elements]
                             prices = [elem.get_text(strip=True).replace('₽', '').replace('P', '').replace('$', '').replace(' ', '') for elem in price_elements]
                             
