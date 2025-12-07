@@ -727,33 +727,67 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             print(f"    ⚠️ Size guide button not found")
             return None
         
-        # Кликаем на кнопку
+        # Прокручиваем к кнопке и кликаем
         try:
+            driver.execute_script("arguments[0].scrollIntoView({ block: 'center', behavior: 'auto' });", size_guide_button)
+            time.sleep(1)
             driver.execute_script("arguments[0].click();", size_guide_button)
-            time.sleep(2)
             print(f"    ✅ Clicked size guide button")
+            time.sleep(3)  # Увеличиваем время ожидания после клика
         except Exception as e:
             print(f"    ⚠️ Error clicking size guide button: {e}")
             return None
         
-        # Ждем появления модального окна с таблицей
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'table, [class*="table"], [class*="Table"]'))
-            )
-            time.sleep(1)
-            print(f"    ✅ Size guide modal opened")
-        except:
-            print(f"    ⚠️ Size guide modal not found")
-            return None
+        # Ждем появления модального окна с таблицей (пробуем разные селекторы)
+        modal_found = False
+        modal_selectors = [
+            'table',
+            '[class*="SizeGuide"] table',
+            '[class*="size-guide"] table',
+            '[class*="Table"]',
+            'div[class*="table"]',
+            '[class*="Modal"] table',
+            '[class*="modal"] table',
+            'div.ant-modal table',
+            '.ant-modal-body table',
+            '[role="dialog"] table',
+        ]
         
-        # Ищем таблицу с размерами
+        for selector in modal_selectors:
+            try:
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                print(f"    ✅ Size guide modal opened (found via: {selector})")
+                modal_found = True
+                time.sleep(1)
+                break
+            except:
+                continue
+        
+        if not modal_found:
+            print(f"    ⚠️ Size guide modal not found after trying {len(modal_selectors)} selectors")
+            # Пробуем найти любую таблицу на странице
+            try:
+                all_tables = driver.find_elements(By.CSS_SELECTOR, 'table')
+                if all_tables:
+                    print(f"    ℹ️ Found {len(all_tables)} table(s) on page, trying first one...")
+                    modal_found = True
+                else:
+                    return None
+            except:
+                return None
+        
+        # Ищем таблицу с размерами (используем все найденные таблицы, если модальное окно не найдено)
         table_selectors = [
             'table',
             '[class*="SizeGuide"] table',
             '[class*="size-guide"] table',
             '[class*="Table"]',
             'div[class*="table"]',
+            '.ant-modal table',
+            '.ant-modal-body table',
+            '[role="dialog"] table',
         ]
         
         table = None
@@ -761,8 +795,17 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             try:
                 tables = driver.find_elements(By.CSS_SELECTOR, selector)
                 if tables:
-                    table = tables[0]
-                    print(f"    ✅ Found size guide table via: {selector}")
+                    # Если найдено несколько таблиц, берем ту, которая содержит заголовки размеров
+                    for t in tables:
+                        table_text = t.get_attribute('textContent') or ''
+                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские']):
+                            table = t
+                            print(f"    ✅ Found size guide table via: {selector} (contains size keywords)")
+                            break
+                    if not table:
+                        # Если не нашли по ключевым словам, берем первую таблицу
+                        table = tables[0]
+                        print(f"    ✅ Found size guide table via: {selector} (using first table)")
                     break
             except:
                 continue
