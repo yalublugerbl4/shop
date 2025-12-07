@@ -428,6 +428,78 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                         print(f"          Mapped price: skuId={item_sku_id}, price={item_price}")
                                     elif isinstance(value, dict):
                                         print(f"      {key} is a dict with keys: {list(value.keys())[:10]}")
+                                        # Особый случай: skuMinPriceInfoDTO может содержать цены
+                                        if key == 'skuMinPriceInfoDTO':
+                                            print(f"        🔍 Analyzing skuMinPriceInfoDTO structure...")
+                                            # minPrice или authPrice могут содержать цену
+                                            min_price = value.get('minPrice')
+                                            auth_price = value.get('authPrice')
+                                            sku_id_dto = value.get('skuId')
+                                            print(f"          minPrice: {min_price}, authPrice: {auth_price}, skuId: {sku_id_dto}")
+                                            if min_price and sku_id_dto:
+                                                # Если minPrice - словарь
+                                                if isinstance(min_price, dict):
+                                                    price_val = min_price.get('minUnitVal') or min_price.get('amount') or min_price.get('money')
+                                                else:
+                                                    price_val = min_price
+                                                if price_val:
+                                                    sku_price_mapping[sku_id_dto] = price_val
+                                                    print(f"          ✅ Mapped price from minPrice: skuId={sku_id_dto}, price={price_val}")
+                                            if auth_price and sku_id_dto and sku_id_dto not in sku_price_mapping:
+                                                if isinstance(auth_price, dict):
+                                                    price_val = auth_price.get('minUnitVal') or auth_price.get('amount') or auth_price.get('money')
+                                                else:
+                                                    price_val = auth_price
+                                                if price_val:
+                                                    sku_price_mapping[sku_id_dto] = price_val
+                                                    print(f"          ✅ Mapped price from authPrice: skuId={sku_id_dto}, price={price_val}")
+                                        
+                                        # Особый случай: levelOneMinPriceSkus может содержать маппинг propertyValueId -> цены
+                                        elif key == 'levelOneMinPriceSkus':
+                                            print(f"        🔍 Analyzing levelOneMinPriceSkus structure...")
+                                            for prop_value_id, price_info in value.items():
+                                                print(f"          propertyValueId={prop_value_id}, price_info type={type(price_info)}")
+                                                if isinstance(price_info, dict):
+                                                    print(f"            price_info keys: {list(price_info.keys())[:10]}")
+                                                    # Ищем цену в структуре
+                                                    price_val = (price_info.get('minPrice') or 
+                                                                price_info.get('price') or 
+                                                                price_info.get('money') or
+                                                                price_info.get('authPrice'))
+                                                    if isinstance(price_val, dict):
+                                                        price_val = price_val.get('minUnitVal') or price_val.get('amount') or price_val.get('money')
+                                                    if price_val:
+                                                        # Нужно найти все SKU с этим propertyValueId
+                                                        for sku_item in skus:
+                                                            sku_props = sku_item.get('properties', [])
+                                                            if isinstance(sku_props, list):
+                                                                for prop in sku_props:
+                                                                    if isinstance(prop, dict):
+                                                                        prop_id = prop.get('propertyValueId')
+                                                                        if prop_id == prop_value_id or str(prop_id) == str(prop_value_id):
+                                                                            sku_id_match = sku_item.get('skuId')
+                                                                            if sku_id_match:
+                                                                                sku_price_mapping[sku_id_match] = price_val
+                                                                                print(f"          ✅ Mapped price: propertyValueId={prop_value_id} -> skuId={sku_id_match}, price={price_val}")
+                                                elif isinstance(price_info, (int, float, str)):
+                                                    # Возможно, прямое значение цены
+                                                    try:
+                                                        price_num = float(price_info)
+                                                        if price_num > 100:  # Разумная цена
+                                                            # Находим все SKU с этим propertyValueId
+                                                            for sku_item in skus:
+                                                                sku_props = sku_item.get('properties', [])
+                                                                if isinstance(sku_props, list):
+                                                                    for prop in sku_props:
+                                                                        if isinstance(prop, dict):
+                                                                            prop_id = prop.get('propertyValueId')
+                                                                            if prop_id == prop_value_id or str(prop_id) == str(prop_value_id):
+                                                                                sku_id_match = sku_item.get('skuId')
+                                                                                if sku_id_match and sku_id_match not in sku_price_mapping:
+                                                                                    sku_price_mapping[sku_id_match] = price_num
+                                                                                    print(f"          ✅ Mapped price (direct): propertyValueId={prop_value_id} -> skuId={sku_id_match}, price={price_num}")
+                                                    except:
+                                                        pass
                             
                             # Также пробуем найти массив цен в product_data
                             price_list = None
@@ -1163,10 +1235,21 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Downloaded {len(images)} images")
             
-            # Парсинг размеров и цен (если еще не нашли из __NEXT_DATA__)
+            # Парсинг размеров и цен из HTML (даже если уже есть description, чтобы получить правильные цены)
             # Используем селекторы из Selenium кода
-            if not description:
-                sizes_prices = []
+            html_sizes_prices = []
+            
+            # Если у нас уже есть sizes_prices из __NEXT_DATA__ но все цены одинаковые, 
+            # пробуем найти индивидуальные цены из HTML
+            need_html_prices = False
+            if sizes_prices:
+                # Проверяем, все ли цены одинаковые
+                unique_prices = set(item['price'] for item in sizes_prices)
+                if len(unique_prices) == 1:
+                    need_html_prices = True
+                    print(f"  ⚠️ All sizes have the same price ({list(unique_prices)[0]}), trying to find individual prices from HTML...")
+            
+            if not description or need_html_prices:
                 print("Searching for sizes and prices using SkuPanel selectors...")
                 
                 # Сначала проверим, есть ли вообще элементы SkuPanel на странице
@@ -1222,7 +1305,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             price_num = price_num * 12.5
                                         price_cents = int(price_num * 100)  # в копейках
                                         
-                                        sizes_prices.append({
+                                        html_sizes_prices.append({
                                             'size': size,
                                             'price': price_cents
                                         })
@@ -1261,7 +1344,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             price_num = price_num * 12.5
                                         price_cents = int(price_num * 100)
                                         
-                                        sizes_prices.append({
+                                        html_sizes_prices.append({
                                             'size': size,
                                             'price': price_cents
                                         })
@@ -1299,7 +1382,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         price_num = price_num * 12.5
                                     price_cents = int(price_num * 100)
                                     
-                                    sizes_prices.append({
+                                    html_sizes_prices.append({
                                         'size': size,
                                         'price': price_cents
                                     })
@@ -1311,7 +1394,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         print(f"  Error parsing sizes/prices with menu_count=3: {e}")
                 
                 # Попробуем более простой подход - просто ищем все элементы с этими классами
-                if not sizes_prices:
+                if not html_sizes_prices:
                     print(f"  Fallback: Trying to find ANY SkuPanel_value and SkuPanel_price elements...")
                     try:
                         all_size_elements = soup.select('div.SkuPanel_value__BAJ1p')
@@ -1335,7 +1418,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             price_num = price_num * 12.5
                                         price_cents = int(price_num * 100)
                                         
-                                        sizes_prices.append({
+                                        html_sizes_prices.append({
                                             'size': size,
                                             'price': price_cents
                                         })
@@ -1349,7 +1432,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         traceback.print_exc()
                 
                 # Если есть вкладки размеров (check_gender в оригинальном коде)
-                if not sizes_prices:
+                if not html_sizes_prices:
                     try:
                         size_buttons = soup.select('div.SkuPanel_tabItem__MuUkW')
                         if size_buttons:
@@ -1373,8 +1456,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                 price_num = price_num * 12.5
                                             price_cents = int(price_num * 100)
                                             
-                                            if not any(sp['size'] == size for sp in sizes_prices):
-                                                sizes_prices.append({
+                                            if not any(sp['size'] == size for sp in html_sizes_prices):
+                                                html_sizes_prices.append({
                                                     'size': size,
                                                     'price': price_cents
                                                 })
@@ -1383,6 +1466,26 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         pass
                     except Exception as e:
                         print(f"  Error parsing from size tabs: {e}")
+                
+                # Объединяем размеры из __NEXT_DATA__ с ценами из HTML
+                if html_sizes_prices and sizes_prices:
+                    print(f"  🔄 Merging {len(sizes_prices)} sizes from __NEXT_DATA__ with {len(html_sizes_prices)} prices from HTML...")
+                    # Создаем маппинг размер -> цена из HTML
+                    html_price_map = {item['size']: item['price'] for item in html_sizes_prices}
+                    # Обновляем цены в sizes_prices
+                    for item in sizes_prices:
+                        size_key = item['size']
+                        # Пробуем найти точное совпадение
+                        if size_key in html_price_map:
+                            item['price'] = html_price_map[size_key]
+                            print(f"    ✅ Updated price for size {size_key}: {item['price']} копеек")
+                        else:
+                            # Пробуем найти похожий размер (например, "43" и "43,0")
+                            for html_size, html_price in html_price_map.items():
+                                if size_key.replace(',', '.') == html_size.replace(',', '.'):
+                                    item['price'] = html_price
+                                    print(f"    ✅ Updated price for size {size_key} (matched {html_size}): {item['price']} копеек")
+                                    break
             
             # Формируем описание из размеров и цен
             if sizes_prices:
