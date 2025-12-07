@@ -592,63 +592,78 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             except:
                 pass
 
-def _extract_sizes_prices_from_html(soup: BeautifulSoup, html_text: str) -> list:
+def _extract_sizes_prices_from_html(soup: BeautifulSoup, html_text: str, response_text: str = None) -> list:
     """Агрессивно извлекает размеры и цены из HTML-текста через регулярные выражения"""
     sizes_prices = []
     try:
         # Получаем весь текст страницы
         page_text = soup.get_text() if soup else html_text
         
-        # Паттерн для поиска пар "размер (eu) цена ₽"
-        # Примеры: "34,5 (35,5) 17 830 ₽", "41,5 (42,5) 8 412 ₽"
+        # Также пробуем искать в исходном HTML (может содержать больше информации)
+        html_text_to_search = response_text if response_text else html_text
+        
+        # Паттерн для поиска пар "размер (eu) цена ₽" или "размер цена ₽"
+        # Примеры: "34,5 (35,5) 17 830 ₽", "41,5 (42,5) 8 412 ₽", "36 4 543 P", "40 4 531 P"
         patterns = [
-            # Паттерн 1: размер с EU в скобках, затем цена
-            re.compile(r'(\d+[,.]?\d*)\s*\(\d+[,.]?\d*\)\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽Р]', re.IGNORECASE),
-            # Паттерн 2: просто размер, затем цена (но рядом должен быть размер в скобках где-то)
-            re.compile(r'(\d+[,.]?\d*)\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽Р]', re.IGNORECASE),
+            # Паттерн 1: размер с EU в скобках, затем цена с пробелами
+            re.compile(r'(\d+[,.]?\d*)\s*\(\d+[,.]?\d*\)\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]', re.IGNORECASE),
+            # Паттерн 2: просто размер, затем цена с пробелами (формат "36 4 543 P")
+            re.compile(r'(\d+[,.]?\d*)\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]', re.IGNORECASE),
+            # Паттерн 3: размер и цена без пробелов в цене (формат "36 4543 ₽")
+            re.compile(r'(\d+[,.]?\d*)\s+(\d{4,6})\s*[₽РP]', re.IGNORECASE),
+            # Паттерн 4: размер и цена в формате "36: 4 543 ₽" или "36 - 4 543 ₽"
+            re.compile(r'(\d+[,.]?\d*)\s*[:-]\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]', re.IGNORECASE),
+            # Паттерн 5: размер и цена в формате "36\n4 543 ₽" (на разных строках)
+            re.compile(r'(\d+[,.]?\d*)\s*\n\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]', re.IGNORECASE | re.MULTILINE),
         ]
+        
+        # Пробуем искать в HTML-тексте тоже (может содержать больше информации)
+        texts_to_search = [page_text]
+        if html_text_to_search and html_text_to_search != page_text:
+            texts_to_search.append(html_text_to_search)
         
         found_pairs = {}
         
         for pattern in patterns:
-            matches = pattern.finditer(page_text)
-            for match in matches:
-                try:
-                    size_text = match.group(1).strip()
-                    price_text = match.group(2).strip()
-                    
-                    # Нормализуем размер (заменяем точку на запятую)
-                    size = size_text.replace('.', ',')
-                    
-                    # Очищаем цену от пробелов
-                    price_clean = price_text.replace(' ', '').replace(',', '').replace('\xa0', '')
-                    
-                    # Проверяем, что размер в разумном диапазоне (для обуви)
+            for text in texts_to_search:
+                matches = pattern.finditer(text)
+                for match in matches:
                     try:
-                        size_num = float(size.replace(',', '.'))
-                        if size_num < 15 or size_num > 60:  # Неразумный размер для обуви
-                            continue
-                    except:
-                        continue
-                    
-                    # Парсим цену
-                    try:
-                        price_num = float(price_clean)
-                        if price_num < 100 or price_num > 100000:  # Неразумная цена
+                        size_text = match.group(1).strip()
+                        price_text = match.group(2).strip()
+                        
+                        # Нормализуем размер (заменяем точку на запятую)
+                        size = size_text.replace('.', ',')
+                        
+                        # Очищаем цену от пробелов
+                        price_clean = price_text.replace(' ', '').replace(',', '').replace('\xa0', '')
+                        
+                        # Проверяем, что размер в разумном диапазоне (для обуви)
+                        try:
+                            size_num = float(size.replace(',', '.'))
+                            if size_num < 15 or size_num > 60:  # Неразумный размер для обуви
+                                continue
+                        except:
                             continue
                         
-                        price_cents = int(price_num * 100)
-                        
-                        # Сохраняем пару, если еще не было такого размера или цена другая
-                        if size not in found_pairs or found_pairs[size]['price'] != price_cents:
-                            found_pairs[size] = {
-                                'size': size,
-                                'price': price_cents
-                            }
+                        # Парсим цену
+                        try:
+                            price_num = float(price_clean)
+                            if price_num < 100 or price_num > 100000:  # Неразумная цена
+                                continue
+                            
+                            price_cents = int(price_num * 100)
+                            
+                            # Сохраняем пару, если еще не было такого размера или цена другая
+                            if size not in found_pairs or found_pairs[size]['price'] != price_cents:
+                                found_pairs[size] = {
+                                    'size': size,
+                                    'price': price_cents
+                                }
+                        except Exception as e:
+                            continue
                     except Exception as e:
                         continue
-                except Exception as e:
-                    continue
         
         # Преобразуем в список
         sizes_prices = list(found_pairs.values())
@@ -2471,7 +2486,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             # Сначала пробуем агрессивный поиск в HTML
             if need_html_search:
                 print(f"  🔍 Trying aggressive HTML text search for size-price pairs...")
-                html_sizes_prices = _extract_sizes_prices_from_html(soup, response.text)
+                html_sizes_prices = _extract_sizes_prices_from_html(soup, response.text, response.text)
                 if html_sizes_prices:
                     unique_html_prices = set(item['price'] for item in html_sizes_prices if item['price'] is not None)
                     if len(unique_html_prices) > 1:  # Если нашли разные цены
