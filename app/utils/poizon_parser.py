@@ -159,23 +159,12 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         if images_data:
                             if isinstance(images_data, list):
-                                # Пропускаем первое изображение только если это явно подошва/стопа
+                                print(f"  📸 Found {len(images_data)} images in detailImageList, processing in order...")
+                                # Берем все изображения в порядке из detailImageList (это правильный порядок с сайта)
                                 for idx, img in enumerate(images_data):
-                                    if idx == 0:
-                                        # Проверяем первое изображение - пропускаем только если это подошва
-                                        img_url_check = None
-                                        if isinstance(img, str):
-                                            img_url_check = img
-                                        elif isinstance(img, dict):
-                                            img_url_check = (img.get('url') or img.get('src') or img.get('imageUrl'))
-                                        if img_url_check:
-                                            img_url_lower = img_url_check.lower()
-                                            skip_keywords = ['sole', 'подошв', 'стоп', 'bottom', 'underside', 'outsole', 'midsole']
-                                            if any(keyword in img_url_lower for keyword in skip_keywords):
-                                                print(f"  ⏭️ Skipping first image from __NEXT_DATA__ (detected as sole): {img_url_check[:80]}...")
-                                                continue
                                     if idx >= 10:  # Максимум 10 изображений
                                         break
+                                    
                                     img_url = None
                                     if isinstance(img, str):
                                         img_url = img
@@ -187,9 +176,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                   img.get('originUrl') or
                                                   img.get('image') or
                                                   img.get('originalUrl') or
-                                                  img.get('largeUrl'))
+                                                  img.get('largeUrl') or
+                                                  img.get('imgUrl'))
                                     
                                     if img_url:
+                                        # Пропускаем AI-изображения
+                                        img_url_lower = img_url.lower()
+                                        if 'ai/generate' in img_url_lower or 'ai_generate' in img_url_lower:
+                                            print(f"  ⏭️ Skipping AI-generated image {idx+1}: {img_url[:80]}...")
+                                            continue
+                                        
                                         # Нормализуем URL
                                         if img_url.startswith('//'):
                                             img_url = 'https:' + img_url
@@ -198,7 +194,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         
                                         if img_url.startswith('http') and img_url not in images:
                                             images.append(img_url)  # Пока сохраняем как URL
-                                            print(f"    Added image {idx+1} from __NEXT_DATA__: {img_url[:80]}...")
+                                            print(f"    ✅ Added image {idx+1} from __NEXT_DATA__: {img_url[:80]}...")
                             elif isinstance(images_data, str):
                                 # Если одно изображение, тоже пропускаем
                                 pass
@@ -1659,15 +1655,25 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     
                     # Улучшенный паттерн: ищем "38 (39) 3 993 Р" или "40 (41) 3 741 Р" или "39,5 (40,5) 8 094 Р"
                     # Паттерн должен искать размер перед ценой, а не наоборот
+                    # Ищем размер (может быть с запятой), затем опционально (EU размер), затем пробел и цена
                     size_price_pattern = re.compile(
                         r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
-                        re.IGNORECASE
+                        re.IGNORECASE | re.MULTILINE
+                    )
+                    
+                    # Также пробуем более простой паттерн для случаев без скобок
+                    size_price_pattern_simple = re.compile(
+                        r'(\d+[,.]?\d*)\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
+                        re.IGNORECASE | re.MULTILINE
                     )
                     
                     matches = size_price_pattern.findall(page_text)
+                    # Если не нашли, пробуем простой паттерн
+                    if not matches:
+                        matches = size_price_pattern_simple.findall(page_text)
                     print(f"    Found {len(matches)} potential size-price pairs")
                     
-                    for size_str, price_str in matches:
+                    for idx, (size_str, price_str) in enumerate(matches):
                         try:
                             # Очищаем размер - оставляем запятую как есть
                             size_clean = size_str.strip()
@@ -1681,9 +1687,15 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             
                             # Проверяем разумность: размер должен быть от 30 до 50, цена от 1000 до 100000 рублей
                             size_num = float(size_str.replace(',', '.'))
+                            
+                            # Детальное логирование для отладки
+                            if idx < 5:  # Логируем первые 5 для анализа
+                                print(f"    DEBUG: size_str='{size_str}', price_str='{price_str}' -> size_num={size_num}, price_cents={price_cents}")
+                            
                             if 30 <= size_num <= 50 and 1000 <= price_cents <= 10000000:
                                 # Проверяем, нет ли уже такого размера
-                                if not any(sp['size'] == size_clean for sp in html_sizes_prices):
+                                existing = [sp for sp in html_sizes_prices if sp['size'] == size_clean]
+                                if not existing:
                                     html_sizes_prices.append({
                                         'size': size_clean,
                                         'price': price_cents
@@ -1693,11 +1705,17 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     # Обновляем цену, если нашли более точную
                                     for sp in html_sizes_prices:
                                         if sp['size'] == size_clean:
+                                            old_price = sp['price']
                                             sp['price'] = price_cents
-                                            print(f"    🔄 Updated price for size {size_clean}: {price_cents} копеек")
+                                            print(f"    🔄 Updated price for size {size_clean}: {old_price} -> {price_cents} копеек")
                                             break
+                            else:
+                                if idx < 5:
+                                    print(f"    ⚠️ Rejected: size_num={size_num} (valid: 30-50), price_cents={price_cents} (valid: 1000-10000000)")
                         except Exception as e:
                             print(f"    ⚠️ Error parsing size-price pair '{size_str}' -> '{price_str}': {e}")
+                            import traceback
+                            traceback.print_exc()
                             pass
                 except Exception as e:
                     print(f"  Error in aggressive search: {e}")
@@ -1743,22 +1761,43 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 # Объединяем размеры из __NEXT_DATA__ с ценами из HTML
                 if html_sizes_prices and sizes_prices:
                     print(f"  🔄 Merging {len(sizes_prices)} sizes from __NEXT_DATA__ with {len(html_sizes_prices)} prices from HTML...")
+                    print(f"    HTML sizes: {[sp['size'] for sp in html_sizes_prices[:5]]}...")
+                    print(f"    __NEXT_DATA__ sizes: {[sp['size'] for sp in sizes_prices[:5]]}...")
+                    
                     # Создаем маппинг размер -> цена из HTML
                     html_price_map = {item['size']: item['price'] for item in html_sizes_prices}
+                    
                     # Обновляем цены в sizes_prices
+                    updated_count = 0
                     for item in sizes_prices:
                         size_key = item['size']
+                        original_price = item['price']
+                        
                         # Пробуем найти точное совпадение
                         if size_key in html_price_map:
                             item['price'] = html_price_map[size_key]
-                            print(f"    ✅ Updated price for size {size_key}: {item['price']} копеек")
+                            if item['price'] != original_price:
+                                print(f"    ✅ Updated price for size {size_key}: {original_price} -> {item['price']} копеек")
+                                updated_count += 1
                         else:
-                            # Пробуем найти похожий размер (например, "43" и "43,0")
+                            # Пробуем найти похожий размер (например, "43" и "43,0" или "38" и "38 (39)")
+                            size_key_normalized = size_key.replace(',', '.')
                             for html_size, html_price in html_price_map.items():
-                                if size_key.replace(',', '.') == html_size.replace(',', '.'):
-                                    item['price'] = html_price
-                                    print(f"    ✅ Updated price for size {size_key} (matched {html_size}): {item['price']} копеек")
-                                    break
+                                html_size_normalized = html_size.replace(',', '.')
+                                # Сравниваем числовые значения размеров
+                                try:
+                                    size_key_num = float(size_key_normalized)
+                                    html_size_num = float(html_size_normalized)
+                                    if abs(size_key_num - html_size_num) < 0.1:  # Размеры совпадают
+                                        item['price'] = html_price
+                                        if item['price'] != original_price:
+                                            print(f"    ✅ Updated price for size {size_key} (matched {html_size}): {original_price} -> {item['price']} копеек")
+                                            updated_count += 1
+                                        break
+                                except:
+                                    pass
+                    
+                    print(f"  ✅ Updated prices for {updated_count} sizes")
             
             # Формируем описание из размеров и цен
             if sizes_prices:
