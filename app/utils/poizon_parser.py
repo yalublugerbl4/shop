@@ -440,6 +440,18 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                 # Если minPrice - словарь
                                                 if isinstance(min_price, dict):
                                                     price_val = min_price.get('minUnitVal') or min_price.get('amount') or min_price.get('money')
+                                                    # Если minUnitVal - это число, используем его (уже в копейках)
+                                                    if isinstance(price_val, (int, float)) and price_val >= 1000:
+                                                        pass  # Уже в копейках
+                                                    elif isinstance(price_val, str):
+                                                        try:
+                                                            price_val = float(price_val)
+                                                            if price_val >= 1000:
+                                                                price_val = int(price_val)  # Уже в копейках
+                                                            else:
+                                                                price_val = int(price_val * 100)  # В рублях, конвертируем
+                                                        except:
+                                                            pass
                                                 else:
                                                     price_val = min_price
                                                 if price_val:
@@ -448,6 +460,17 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             if auth_price and sku_id_dto and sku_id_dto not in sku_price_mapping:
                                                 if isinstance(auth_price, dict):
                                                     price_val = auth_price.get('minUnitVal') or auth_price.get('amount') or auth_price.get('money')
+                                                    if isinstance(price_val, (int, float)) and price_val >= 1000:
+                                                        pass
+                                                    elif isinstance(price_val, str):
+                                                        try:
+                                                            price_val = float(price_val)
+                                                            if price_val >= 1000:
+                                                                price_val = int(price_val)
+                                                            else:
+                                                                price_val = int(price_val * 100)
+                                                        except:
+                                                            pass
                                                 else:
                                                     price_val = auth_price
                                                 if price_val:
@@ -455,32 +478,48 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     print(f"          ✅ Mapped price from authPrice: skuId={sku_id_dto}, price={price_val}")
                                         
                                         # Особый случай: levelOneMinPriceSkus может содержать маппинг propertyValueId -> цены
+                                        # ВАЖНО: levelOneMinPriceSkus содержит только минимальную цену для одного propertyValueId,
+                                        # НЕ индивидуальные цены для каждого размера! Нужно искать цены в других местах.
                                         elif key == 'levelOneMinPriceSkus':
                                             print(f"        🔍 Analyzing levelOneMinPriceSkus structure...")
+                                            print(f"        ⚠️ NOTE: levelOneMinPriceSkus usually contains only min price, not individual prices per size")
                                             for prop_value_id, price_info in value.items():
                                                 print(f"          propertyValueId={prop_value_id}, price_info type={type(price_info)}")
                                                 if isinstance(price_info, dict):
                                                     print(f"            price_info keys: {list(price_info.keys())[:10]}")
-                                                    # Ищем цену в структуре
-                                                    price_val = (price_info.get('minPrice') or 
-                                                                price_info.get('price') or 
-                                                                price_info.get('money') or
-                                                                price_info.get('authPrice'))
-                                                    if isinstance(price_val, dict):
-                                                        price_val = price_val.get('minUnitVal') or price_val.get('amount') or price_val.get('money')
+                                                    # Ищем цену в структуре - minPrice может быть словарем
+                                                    min_price_obj = price_info.get('minPrice')
+                                                    if isinstance(min_price_obj, dict):
+                                                        # Извлекаем minUnitVal (уже в копейках)
+                                                        price_val = min_price_obj.get('minUnitVal')
+                                                        if not price_val:
+                                                            # Если нет minUnitVal, пробуем amount и конвертируем
+                                                            amount = min_price_obj.get('amount')
+                                                            if amount:
+                                                                try:
+                                                                    amount_num = float(str(amount))
+                                                                    if amount_num >= 1000:
+                                                                        price_val = int(amount_num)  # Уже в копейках
+                                                                    else:
+                                                                        price_val = int(amount_num * 100)  # В рублях
+                                                                except:
+                                                                    pass
+                                                    else:
+                                                        price_val = min_price_obj
+                                                    
+                                                    # Если не нашли, пробуем authPrice
+                                                    if not price_val:
+                                                        auth_price_obj = price_info.get('authPrice')
+                                                        if isinstance(auth_price_obj, dict):
+                                                            price_val = auth_price_obj.get('minUnitVal') or auth_price_obj.get('amount')
+                                                        else:
+                                                            price_val = auth_price_obj
+                                                    
                                                     if price_val:
-                                                        # Нужно найти все SKU с этим propertyValueId
-                                                        for sku_item in skus:
-                                                            sku_props = sku_item.get('properties', [])
-                                                            if isinstance(sku_props, list):
-                                                                for prop in sku_props:
-                                                                    if isinstance(prop, dict):
-                                                                        prop_id = prop.get('propertyValueId')
-                                                                        if prop_id == prop_value_id or str(prop_id) == str(prop_value_id):
-                                                                            sku_id_match = sku_item.get('skuId')
-                                                                            if sku_id_match:
-                                                                                sku_price_mapping[sku_id_match] = price_val
-                                                                                print(f"          ✅ Mapped price: propertyValueId={prop_value_id} -> skuId={sku_id_match}, price={price_val}")
+                                                        # ВАЖНО: levelOneMinPriceSkus содержит только минимальную цену,
+                                                        # НЕ используем её для всех SKU, только как fallback
+                                                        print(f"          Found min price in levelOneMinPriceSkus: {price_val} (will use as fallback only)")
+                                                        # НЕ добавляем в маппинг, чтобы не перезаписать индивидуальные цены
                                                 elif isinstance(price_info, (int, float, str)):
                                                     # Возможно, прямое значение цены
                                                     try:
@@ -543,6 +582,18 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     # Если price - словарь с minUnitVal
                                                     if isinstance(item_price, dict):
                                                         item_price = item_price.get('minUnitVal') or item_price.get('amount') or item_price.get('money')
+                                                        # Если minUnitVal - это число, используем его (уже в копейках)
+                                                        if isinstance(item_price, (int, float)) and item_price >= 1000:
+                                                            pass  # Уже в копейках
+                                                        elif isinstance(item_price, str):
+                                                            try:
+                                                                item_price = float(item_price)
+                                                                if item_price >= 1000:
+                                                                    item_price = int(item_price)  # Уже в копейках
+                                                                else:
+                                                                    item_price = int(item_price * 100)  # В рублях, конвертируем
+                                                            except:
+                                                                pass
                                                     if item_price:
                                                         sku_price_mapping[item_sku_id] = item_price
                                                         print(f"        Mapped price from price_list: skuId={item_sku_id}, price={item_price}")
@@ -569,6 +620,32 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             
                             print(f"  DEBUG: Size mapping has {len(size_mapping)} entries")
                             print(f"  DEBUG: SKU price mapping has {len(sku_price_mapping)} entries")
+                            
+                            # Дополнительный поиск: проверяем, есть ли в product_data другие структуры с ценами
+                            if len(sku_price_mapping) == 0 or len(set(sku_price_mapping.values())) == 1:
+                                print(f"  ⚠️ All prices are the same or no prices found. Searching for individual prices...")
+                                # Ищем все возможные места с ценами
+                                for key, value in product_data.items():
+                                    if isinstance(value, (list, dict)):
+                                        # Пробуем найти структуры, которые могут содержать цены по SKU
+                                        if isinstance(value, list) and len(value) > 0:
+                                            first_item = value[0]
+                                            if isinstance(first_item, dict):
+                                                # Проверяем, есть ли в элементах skuId и price
+                                                if 'skuId' in first_item and any(price_key in first_item for price_key in ['price', 'money', 'minPrice', 'salePrice']):
+                                                    print(f"    🔍 Found potential price list in '{key}' with {len(value)} items")
+                                                    for item in value:
+                                                        item_sku_id = item.get('skuId')
+                                                        item_price = (item.get('price') or 
+                                                                    item.get('money') or
+                                                                    item.get('minPrice') or
+                                                                    item.get('salePrice'))
+                                                        if isinstance(item_price, dict):
+                                                            item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                        if item_price and item_sku_id:
+                                                            sku_price_mapping[item_sku_id] = item_price
+                                                            print(f"      ✅ Found individual price: skuId={item_sku_id}, price={item_price}")
+                            
                             if not size_mapping:
                                 print(f"  ⚠️ No size mapping found in baseProperties, trying alternative approach...")
                             
@@ -625,8 +702,34 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 
                                 # Сначала пробуем найти цену в маппинге цен по SKU
                                 if sku_id and sku_id in sku_price_mapping:
-                                    price_value = sku_price_mapping[sku_id]
-                                    print(f"    SKU {idx+1}: Found price in mapping: {price_value}")
+                                    price_value_raw = sku_price_mapping[sku_id]
+                                    # Если price_value_raw - словарь, извлекаем minUnitVal (уже в копейках)
+                                    if isinstance(price_value_raw, dict):
+                                        price_value = price_value_raw.get('minUnitVal')
+                                        if price_value is None:
+                                            # Если нет minUnitVal, пробуем amount и конвертируем
+                                            amount = price_value_raw.get('amount') or price_value_raw.get('money')
+                                            if amount:
+                                                try:
+                                                    amount_num = float(str(amount))
+                                                    if amount_num >= 1000:
+                                                        price_value = int(amount_num)  # Уже в копейках
+                                                    else:
+                                                        price_value = int(amount_num * 100)  # В рублях
+                                                except:
+                                                    price_value = None
+                                        elif isinstance(price_value, str):
+                                            try:
+                                                price_val_num = float(price_value)
+                                                if price_val_num >= 1000:
+                                                    price_value = int(price_val_num)
+                                                else:
+                                                    price_value = int(price_val_num * 100)
+                                            except:
+                                                price_value = None
+                                    else:
+                                        price_value = price_value_raw
+                                    print(f"    SKU {idx+1}: Found price in mapping: {price_value} (type: {type(price_value)})")
                                 else:
                                     # Пробуем найти цену в самом SKU - расширенный поиск
                                     price_value = (sku.get('price') or 
@@ -711,13 +814,32 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 if size and price_value:
                                     try:
                                         # Цена может быть в разных форматах
-                                        if isinstance(price_value, (int, float)):
-                                            # Если число большое (>= 1000), возможно это уже в копейках или центах
+                                        price_cents = None
+                                        
+                                        if isinstance(price_value, dict):
+                                            # Если это словарь, извлекаем minUnitVal (уже в копейках)
+                                            price_cents = price_value.get('minUnitVal')
+                                            if price_cents is None:
+                                                # Если нет minUnitVal, пробуем amount и конвертируем
+                                                amount = price_value.get('amount')
+                                                if amount:
+                                                    try:
+                                                        amount_num = float(str(amount))
+                                                        if amount_num >= 1000:
+                                                            price_cents = int(amount_num)  # Уже в копейках
+                                                        else:
+                                                            price_cents = int(amount_num * 100)  # В рублях
+                                                    except:
+                                                        pass
+                                        
+                                        elif isinstance(price_value, (int, float)):
+                                            # Если число большое (>= 1000), возможно это уже в копейках
                                             if price_value >= 1000:
                                                 price_cents = int(price_value)
                                             else:
                                                 price_cents = int(price_value * 100)  # Предполагаем рубли
                                         else:
+                                            # Строка - парсим
                                             price_str = str(price_value).replace(' ', '').replace(',', '').replace('₽', '').replace('₴', '')
                                             price_num = float(re.sub(r'[^\d.]', '', price_str))
                                             if price_num >= 1000:
@@ -725,13 +847,18 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             else:
                                                 price_cents = int(price_num * 100)
                                         
-                                        sizes_prices.append({
-                                            'size': str(size),
-                                            'price': price_cents
-                                        })
-                                        print(f"  SKU {idx+1}: size={size}, price={price_cents} копеек")
+                                        if price_cents and 100 <= price_cents <= 10000000:  # Разумный диапазон
+                                            sizes_prices.append({
+                                                'size': str(size),
+                                                'price': price_cents
+                                            })
+                                            print(f"  SKU {idx+1}: size={size}, price={price_cents} копеек")
+                                        else:
+                                            print(f"  SKU {idx+1}: Invalid price value: {price_value} -> {price_cents}")
                                     except Exception as e:
                                         print(f"  Error parsing SKU {idx+1}: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                         pass
                             
                             if sizes_prices:
