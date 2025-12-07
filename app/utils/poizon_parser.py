@@ -863,11 +863,16 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                 print(f"    ⚠️ Error searching for tables: {e}")
                 return None
         
+        # Даем дополнительное время на загрузку контента внутри модального окна
+        time.sleep(2)
+        
         # Ищем таблицу с размерами (используем все найденные таблицы, если модальное окно не найдено)
         table_selectors = [
             '.ant-modal table',
             '.ant-modal-content table',
             '.ant-modal-body table',
+            '.ant-modal-body .ant-table table',
+            '.ant-modal-body .ant-table-tbody table',
             '[class*="SizeGuide"] table',
             '[class*="size-guide"] table',
             '[class*="Table"]',
@@ -881,13 +886,22 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
         table = None
         for selector in table_selectors:
             try:
+                # Ждем появления таблицы
+                try:
+                    WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                except:
+                    pass
+                
                 tables = driver.find_elements(By.CSS_SELECTOR, selector)
                 if tables:
+                    print(f"    ℹ️ Found {len(tables)} table(s) via: {selector}")
                     # Если найдено несколько таблиц, берем ту, которая содержит заголовки размеров
                     for t in tables:
                         table_text = t.get_attribute('textContent') or ''
                         # Проверяем наличие ключевых слов размеров
-                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR', 'Соответствие']):
+                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR', 'Соответствие', 'стопе']):
                             table = t
                             print(f"    ✅ Found size guide table via: {selector} (contains size keywords)")
                             break
@@ -896,18 +910,21 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                         table = tables[0]
                         print(f"    ✅ Found size guide table via: {selector} (using first table)")
                     break
-            except:
+            except Exception as e:
+                print(f"    ⚠️ Error with selector {selector}: {e}")
                 continue
         
         # Если не нашли через CSS селекторы, пробуем XPath
         if not table:
             try:
+                print(f"    ℹ️ Trying XPath search for table...")
                 # Ищем таблицу внутри модального окна
                 tables_xpath = driver.find_elements(By.XPATH, '//div[contains(@class, "ant-modal")]//table | //div[contains(@class, "modal")]//table | //table')
                 if tables_xpath:
+                    print(f"    ℹ️ Found {len(tables_xpath)} table(s) via XPath")
                     for t in tables_xpath:
                         table_text = t.get_attribute('textContent') or ''
-                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR']):
+                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR', 'Соответствие', 'стопе']):
                             table = t
                             print(f"    ✅ Found size guide table via XPath (contains size keywords)")
                             break
@@ -917,48 +934,171 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             except Exception as e:
                 print(f"    ⚠️ Error finding table via XPath: {e}")
         
+        # Если все еще не нашли, пробуем найти через поиск по тексту
+        if not table:
+            try:
+                print(f"    ℹ️ Trying text-based search for table...")
+                # Ищем элемент, содержащий текст "EU" или "RU"
+                elements_with_eu = driver.find_elements(By.XPATH, '//*[contains(text(), "EU") or contains(text(), "RU")]')
+                if elements_with_eu:
+                    # Ищем ближайшую таблицу
+                    for elem in elements_with_eu:
+                        try:
+                            # Ищем родительскую таблицу
+                            parent_table = elem.find_element(By.XPATH, './ancestor::table')
+                            if parent_table:
+                                table = parent_table
+                                print(f"    ✅ Found size guide table via text search")
+                                break
+                        except:
+                            continue
+            except Exception as e:
+                print(f"    ⚠️ Error in text-based search: {e}")
+        
         if not table:
             print(f"    ⚠️ Size guide table not found")
+            # Попробуем сделать скриншот для отладки
+            try:
+                driver.save_screenshot('/tmp/size_guide_debug.png')
+                print(f"    ℹ️ Saved debug screenshot to /tmp/size_guide_debug.png")
+            except:
+                pass
             return None
         
         # Парсим таблицу
         try:
-            # Получаем заголовки
+            print(f"    📋 Starting to parse table...")
+            
+            # Получаем заголовки - пробуем разные способы
             headers = []
-            header_rows = table.find_elements(By.CSS_SELECTOR, 'thead tr th, thead tr td, tr:first-child th, tr:first-child td')
-            if not header_rows:
-                # Пробуем найти заголовки в первой строке
-                first_row = table.find_elements(By.CSS_SELECTOR, 'tr:first-child td, tr:first-child th')
-                header_rows = first_row
             
-            for header in header_rows:
-                text = header.get_attribute('textContent').strip()
-                if text:
-                    headers.append(text)
+            # Способ 1: через thead
+            try:
+                header_rows = table.find_elements(By.CSS_SELECTOR, 'thead tr th, thead tr td')
+                if header_rows:
+                    for header in header_rows:
+                        text = header.get_attribute('textContent').strip()
+                        if text:
+                            headers.append(text)
+                    print(f"    📋 Found headers via thead: {headers}")
+            except:
+                pass
             
-            print(f"    📋 Found headers: {headers}")
+            # Способ 2: первая строка таблицы
+            if not headers:
+                try:
+                    first_row = table.find_elements(By.CSS_SELECTOR, 'tr:first-child td, tr:first-child th')
+                    if first_row:
+                        for header in first_row:
+                            text = header.get_attribute('textContent').strip()
+                            if text:
+                                headers.append(text)
+                        print(f"    📋 Found headers via first row: {headers}")
+                except:
+                    pass
+            
+            # Способ 3: через XPath
+            if not headers:
+                try:
+                    header_cells = table.find_elements(By.XPATH, './/thead//th | .//thead//td | .//tr[1]//th | .//tr[1]//td')
+                    if header_cells:
+                        for header in header_cells:
+                            text = header.get_attribute('textContent').strip()
+                            if text and text not in headers:
+                                headers.append(text)
+                        print(f"    📋 Found headers via XPath: {headers}")
+                except:
+                    pass
+            
+            # Способ 4: ищем элементы с текстом EU, RU и т.д. и берем их родительскую строку
+            if not headers or len(headers) < 2:
+                try:
+                    # Ищем элементы с ключевыми словами
+                    eu_elem = table.find_elements(By.XPATH, './/*[contains(text(), "EU")]')
+                    ru_elem = table.find_elements(By.XPATH, './/*[contains(text(), "RU")]')
+                    if eu_elem or ru_elem:
+                        # Берем родительскую строку
+                        parent_row = None
+                        if eu_elem:
+                            try:
+                                parent_row = eu_elem[0].find_element(By.XPATH, './ancestor::tr')
+                            except:
+                                pass
+                        if not parent_row and ru_elem:
+                            try:
+                                parent_row = ru_elem[0].find_element(By.XPATH, './ancestor::tr')
+                            except:
+                                pass
+                        
+                        if parent_row:
+                            cells = parent_row.find_elements(By.CSS_SELECTOR, 'td, th')
+                            for cell in cells:
+                                text = cell.get_attribute('textContent').strip()
+                                if text and text not in headers:
+                                    headers.append(text)
+                            print(f"    📋 Found headers via keyword search: {headers}")
+                except Exception as e:
+                    print(f"    ⚠️ Error in keyword search for headers: {e}")
             
             if not headers or len(headers) < 2:
-                print(f"    ⚠️ Not enough headers found")
+                print(f"    ⚠️ Not enough headers found (found: {headers})")
+                # Попробуем взять все уникальные тексты из первой строки
+                try:
+                    all_first_row_texts = []
+                    first_row_cells = table.find_elements(By.XPATH, './/tr[1]//*[text()]')
+                    for cell in first_row_cells:
+                        text = cell.get_attribute('textContent').strip()
+                        if text and text not in all_first_row_texts and len(text) < 50:  # Фильтруем слишком длинные тексты
+                            all_first_row_texts.append(text)
+                    if all_first_row_texts:
+                        headers = all_first_row_texts[:10]  # Берем первые 10
+                        print(f"    📋 Found headers via all texts: {headers}")
+                except:
+                    pass
+            
+            if not headers or len(headers) < 2:
+                print(f"    ⚠️ Still not enough headers, returning None")
                 return None
             
             # Получаем строки данных
-            rows = table.find_elements(By.CSS_SELECTOR, 'tbody tr, tr:not(:first-child)')
-            if not rows:
-                rows = table.find_elements(By.CSS_SELECTOR, 'tr')
+            rows = []
+            try:
+                rows = table.find_elements(By.CSS_SELECTOR, 'tbody tr')
+                if not rows:
+                    rows = table.find_elements(By.CSS_SELECTOR, 'tr:not(:first-child)')
+                if not rows:
+                    rows = table.find_elements(By.CSS_SELECTOR, 'tr')
+            except:
+                rows = table.find_elements(By.XPATH, './/tr')
+            
+            print(f"    📋 Found {len(rows)} rows in table")
             
             size_guide_data = []
-            for row in rows:
-                cells = row.find_elements(By.CSS_SELECTOR, 'td, th')
-                if len(cells) >= len(headers):
-                    row_data = {}
-                    for idx, cell in enumerate(cells[:len(headers)]):
-                        cell_text = cell.get_attribute('textContent').strip()
-                        header_key = headers[idx].replace(' ', '_').replace('Женские', 'US_Женские').replace('Мужские', 'US_Мужские')
-                        row_data[header_key] = cell_text
+            for row_idx, row in enumerate(rows):
+                try:
+                    cells = row.find_elements(By.CSS_SELECTOR, 'td, th')
+                    if not cells:
+                        cells = row.find_elements(By.XPATH, './/td | .//th')
                     
-                    if row_data:
-                        size_guide_data.append(row_data)
+                    if len(cells) >= len(headers):
+                        row_data = {}
+                        for idx, cell in enumerate(cells[:len(headers)]):
+                            try:
+                                cell_text = cell.get_attribute('textContent').strip()
+                                if idx < len(headers):
+                                    header_key = headers[idx].replace(' ', '_').replace('Женские', 'US_Женские').replace('Мужские', 'US_Мужские')
+                                    row_data[header_key] = cell_text
+                            except:
+                                continue
+                        
+                        # Проверяем, что в строке есть хотя бы один размер (EU, RU, UK, US или число)
+                        row_text = ' '.join([cell.get_attribute('textContent') or '' for cell in cells])
+                        if any(keyword in row_text for keyword in ['EU', 'RU', 'UK', 'US', 'JP', 'KR']) or re.search(r'\d+[,.]?\d*', row_text):
+                            if row_data:
+                                size_guide_data.append(row_data)
+                except Exception as e:
+                    print(f"    ⚠️ Error parsing row {row_idx}: {e}")
+                    continue
             
             if size_guide_data:
                 print(f"    ✅ Parsed {len(size_guide_data)} size guide rows")
@@ -967,7 +1107,7 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                     'rows': size_guide_data
                 }
             else:
-                print(f"    ⚠️ No size guide data found")
+                print(f"    ⚠️ No data rows found in table (parsed {len(rows)} rows but no valid data)")
                 return None
                 
         except Exception as e:
