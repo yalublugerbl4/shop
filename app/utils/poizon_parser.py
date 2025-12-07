@@ -743,67 +743,88 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             return None
         
         # Прокручиваем к кнопке и кликаем
+        is_link = False
         try:
             driver.execute_script("arguments[0].scrollIntoView({ block: 'center', behavior: 'auto' });", size_guide_button)
             time.sleep(1)
-            # Пробуем обычный клик сначала
-            try:
-                size_guide_button.click()
-            except:
-                # Если не получилось, используем JavaScript
-                driver.execute_script("arguments[0].click();", size_guide_button)
-            print(f"    ✅ Clicked size guide button")
-            time.sleep(5)  # Увеличиваем время ожидания после клика
+            
+            # Проверяем, является ли это ссылкой (a tag)
+            tag_name = size_guide_button.tag_name.lower()
+            href = size_guide_button.get_attribute('href')
+            
+            if tag_name == 'a' and href:
+                # Если это ссылка, переходим по ней
+                is_link = True
+                print(f"    ℹ️ Size guide button is a link, navigating to: {href}")
+                driver.get(href)
+                time.sleep(5)  # Ждем загрузки страницы
+                # Теперь ищем таблицу на этой странице
+            else:
+                # Если это кнопка, кликаем
+                try:
+                    size_guide_button.click()
+                except:
+                    # Если не получилось, используем JavaScript
+                    driver.execute_script("arguments[0].click();", size_guide_button)
+                print(f"    ✅ Clicked size guide button")
+                time.sleep(5)  # Увеличиваем время ожидания после клика
         except Exception as e:
             print(f"    ⚠️ Error clicking size guide button: {e}")
             return None
         
         # Сначала ждем появления модального окна (любого) - увеличиваем время ожидания
+        # Но если это была ссылка, ищем таблицу прямо на странице
         modal_appeared = False
-        try:
-            # Пробуем разные селекторы для модального окна
-            modal_wait_selectors = [
-                (By.CSS_SELECTOR, '.ant-modal'),
-                (By.CSS_SELECTOR, '.ant-modal-content'),
-                (By.CSS_SELECTOR, '.ant-modal-body'),
-                (By.CSS_SELECTOR, '[class*="modal"]'),
-                (By.CSS_SELECTOR, '[role="dialog"]'),
-                (By.XPATH, '//div[contains(@class, "ant-modal")]'),
-                (By.XPATH, '//div[contains(@class, "modal")]'),
-            ]
-            
-            for by, selector in modal_wait_selectors:
-                try:
-                    WebDriverWait(driver, 8).until(
-                        EC.presence_of_element_located((by, selector))
-                    )
-                    print(f"    ✅ Modal window appeared (found via: {selector})")
-                    modal_appeared = True
-                    time.sleep(3)  # Даем время на полную загрузку контента
-                    break
-                except:
-                    continue
-            
-            if not modal_appeared:
-                print(f"    ⚠️ Modal window not found after waiting, but continuing to search for table...")
-                # Пробуем еще раз с большим временем ожидания
-                try:
-                    # Пробуем найти модальное окно через JavaScript
-                    modal_exists = driver.execute_script("""
-                        return document.querySelector('.ant-modal') !== null || 
-                               document.querySelector('[class*="modal"]') !== null ||
-                               document.querySelector('[role="dialog"]') !== null;
-                    """)
-                    if modal_exists:
-                        print(f"    ✅ Modal window found via JavaScript")
+        
+        if not is_link:
+            # Только если это не ссылка, ищем модальное окно
+            try:
+                # Пробуем разные селекторы для модального окна
+                modal_wait_selectors = [
+                    (By.CSS_SELECTOR, '.ant-modal'),
+                    (By.CSS_SELECTOR, '.ant-modal-content'),
+                    (By.CSS_SELECTOR, '.ant-modal-body'),
+                    (By.CSS_SELECTOR, '[class*="modal"]'),
+                    (By.CSS_SELECTOR, '[role="dialog"]'),
+                    (By.XPATH, '//div[contains(@class, "ant-modal")]'),
+                    (By.XPATH, '//div[contains(@class, "modal")]'),
+                ]
+                
+                for by, selector in modal_wait_selectors:
+                    try:
+                        WebDriverWait(driver, 8).until(
+                            EC.presence_of_element_located((by, selector))
+                        )
+                        print(f"    ✅ Modal window appeared (found via: {selector})")
                         modal_appeared = True
-                        time.sleep(3)
-                except:
-                    pass
-                time.sleep(3)  # Даем еще немного времени
-        except Exception as e:
-            print(f"    ⚠️ Error waiting for modal: {e}")
-            time.sleep(3)
+                        time.sleep(3)  # Даем время на полную загрузку контента
+                        break
+                    except:
+                        continue
+                
+                if not modal_appeared:
+                    print(f"    ⚠️ Modal window not found after waiting, but continuing to search for table...")
+                    # Пробуем еще раз с большим временем ожидания
+                    try:
+                        # Пробуем найти модальное окно через JavaScript
+                        modal_exists = driver.execute_script("""
+                            return document.querySelector('.ant-modal') !== null || 
+                                   document.querySelector('[class*="modal"]') !== null ||
+                                   document.querySelector('[role="dialog"]') !== null;
+                        """)
+                        if modal_exists:
+                            print(f"    ✅ Modal window found via JavaScript")
+                            modal_appeared = True
+                            time.sleep(3)
+                    except:
+                        pass
+                    time.sleep(3)  # Даем еще немного времени
+            except Exception as e:
+                print(f"    ⚠️ Error waiting for modal: {e}")
+                time.sleep(3)
+        else:
+            print(f"    ℹ️ Navigated to size guide page, searching for table directly...")
+            time.sleep(3)  # Ждем загрузки страницы
         
         # Ждем появления модального окна с таблицей (пробуем разные селекторы)
         modal_found = False
