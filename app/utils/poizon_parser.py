@@ -269,15 +269,60 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
         if not sizes_prices:
             print(f"    Trying standard approach with menu count check...")
             try:
-                # Проверяем количество меню (как в gitpars.py)
+                # Увеличиваем время ожидания и прокручиваем страницу
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
+                time.sleep(3)
+                
+                # Проверяем количество меню (как в gitpars.py) - пробуем разные селекторы
                 check_count_menu = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_label__Vbp8t>span:nth-child(1)')
+                if not check_count_menu:
+                    # Пробуем альтернативные селекторы
+                    check_count_menu = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_label"]')
+                if not check_count_menu:
+                    check_count_menu = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel"] [class*="label"]')
+                
                 menu_count = len(check_count_menu)
                 print(f"    Found {menu_count} menu(s)")
                 
-                if menu_count == 1:
-                    # Одно меню: размеры и цены в nth-child(1)
+                if menu_count == 1 or menu_count == 0:
+                    # Одно меню или не нашли меню: размеры и цены в nth-child(1)
+                    # Пробуем разные селекторы
                     size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
                     price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                    
+                    # Если не нашли, пробуем более широкие селекторы
+                    if not size_elements:
+                        size_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_group"] [class*="SkuPanel_value"]')
+                    if not price_elements:
+                        price_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_group"] [class*="SkuPanel_price"]')
+                    
+                    # Если все еще не нашли, пробуем найти все элементы с размерами и ценами
+                    if not size_elements or not price_elements:
+                        # Ищем все элементы, которые могут содержать размеры
+                        all_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel"]')
+                        print(f"    Found {len(all_elements)} total SkuPanel elements, trying to extract sizes and prices...")
+                        
+                        # Пробуем найти размеры и цены в любых элементах
+                        for elem in all_elements:
+                            try:
+                                text = elem.get_attribute('textContent') or ''
+                                # Проверяем, содержит ли элемент размер (число с запятой/точкой)
+                                size_match = re.search(r'(\d+[,.]?\d*)\s*\(', text)
+                                # Проверяем, содержит ли элемент цену (число с ₽ или Р)
+                                price_match = re.search(r'(\d{1,2}(?:\s?\d{3})+)\s*[₽Р]', text)
+                                
+                                if size_match and price_match:
+                                    size = size_match.group(1).replace('.', ',')
+                                    price_text = price_match.group(1).replace(' ', '').replace(',', '')
+                                    try:
+                                        price_num = float(price_text)
+                                        price_cents = int(price_num * 100)
+                                        sizes_prices.append({'size': size, 'price': price_cents})
+                                        print(f"      ✅ Extracted: {size} -> {price_cents} копеек ({price_num} ₽)")
+                                    except:
+                                        pass
+                            except:
+                                continue
                     
                     print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
                     
@@ -342,45 +387,67 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
         if not sizes_prices:
             print(f"    Trying JavaScript-based approach...")
             try:
-                # Используем JavaScript для поиска элементов на странице
+                # Используем JavaScript для поиска элементов на странице - более агрессивный подход
                 js_code = """
-                var sizes = [];
-                var prices = [];
+                var result = {sizes: [], prices: [], pairs: []};
                 
-                // Ищем все элементы с размерами
-                var sizeElements = document.querySelectorAll('[class*="SkuPanel_value"], [class*="size"], [class*="Size"], div[class*="value"]');
-                sizeElements.forEach(function(el) {
-                    var text = el.textContent.trim();
-                    if (text && /\\d+/.test(text)) {
-                        sizes.push(text);
+                // Ищем все элементы, которые могут содержать размеры и цены
+                var allElements = document.querySelectorAll('[class*="SkuPanel"], [class*="size"], [class*="Size"], [class*="price"]');
+                
+                // Пробуем найти контейнеры с размерами и ценами
+                var containers = document.querySelectorAll('[class*="SkuPanel_group"], [class*="SkuPanel_list"]');
+                
+                containers.forEach(function(container) {
+                    var sizeText = '';
+                    var priceText = '';
+                    
+                    // Ищем размер
+                    var sizeEl = container.querySelector('[class*="value"], [class*="size"], [class*="Size"]');
+                    if (sizeEl) {
+                        sizeText = sizeEl.textContent.trim();
+                    }
+                    
+                    // Ищем цену
+                    var priceEl = container.querySelector('[class*="price"], [class*="Price"]');
+                    if (priceEl) {
+                        priceText = priceEl.textContent.trim();
+                    }
+                    
+                    // Если нашли и размер, и цену
+                    if (sizeText && priceText && /\\d+/.test(sizeText) && /\\d/.test(priceText)) {
+                        result.pairs.push({size: sizeText, price: priceText});
                     }
                 });
                 
-                // Ищем все элементы с ценами
-                var priceElements = document.querySelectorAll('[class*="SkuPanel_price"], [class*="price"], div[class*="price"]');
-                priceElements.forEach(function(el) {
-                    var text = el.textContent.trim();
-                    if (text && (/\\d/.test(text) || text.includes('₽') || text.includes('Р'))) {
-                        prices.push(text);
-                    }
-                });
+                // Если не нашли пары, пробуем найти все размеры и цены отдельно
+                if (result.pairs.length === 0) {
+                    var sizeElements = document.querySelectorAll('[class*="SkuPanel_value"], [class*="value"]');
+                    sizeElements.forEach(function(el) {
+                        var text = el.textContent.trim();
+                        if (text && /\\d+/.test(text) && text.length < 20) {
+                            result.sizes.push(text);
+                        }
+                    });
+                    
+                    var priceElements = document.querySelectorAll('[class*="SkuPanel_price"], [class*="price"]');
+                    priceElements.forEach(function(el) {
+                        var text = el.textContent.trim();
+                        if (text && (/\\d/.test(text) || text.includes('₽') || text.includes('Р'))) {
+                            result.prices.push(text);
+                        }
+                    });
+                }
                 
-                return {sizes: sizes, prices: prices};
+                return result;
                 """
                 result = driver.execute_script(js_code)
                 
-                js_sizes = result.get('sizes', [])
-                js_prices = result.get('prices', [])
-                
-                print(f"    JavaScript found {len(js_sizes)} sizes and {len(js_prices)} prices")
-                
-                # Пробуем сопоставить размеры и цены
-                if js_sizes and js_prices:
-                    min_len = min(len(js_sizes), len(js_prices))
-                    for i in range(min_len):
+                # Обрабатываем пары размер-цена
+                if result.get('pairs'):
+                    for pair in result.get('pairs', []):
                         try:
-                            size_text = js_sizes[i].strip()
-                            price_text = js_prices[i].strip()
+                            size_text = pair.get('size', '').strip()
+                            price_text = pair.get('price', '').strip()
                             
                             # Обрабатываем размер
                             if '(' in size_text:
@@ -396,13 +463,51 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                                     price_num = float(price_text_clean)
                                     price_cents = int(price_num * 100)
                                     sizes_prices.append({'size': size, 'price': price_cents})
-                                    print(f"      ✅ JS: {size} -> {price_cents} копеек ({price_num} ₽)")
-                                except:
-                                    pass
-                        except:
+                                    print(f"      ✅ JS Pair: {size} -> {price_cents} копеек ({price_num} ₽)")
+                                except Exception as e:
+                                    print(f"      ⚠️ Error parsing JS pair price '{price_text}': {e}")
+                        except Exception as e:
+                            print(f"      ⚠️ Error processing JS pair: {e}")
                             continue
+                
+                # Если не нашли пары, пробуем сопоставить размеры и цены по индексу
+                if not sizes_prices:
+                    js_sizes = result.get('sizes', [])
+                    js_prices = result.get('prices', [])
+                    
+                    print(f"    JavaScript found {len(js_sizes)} sizes and {len(js_prices)} prices")
+                    
+                    if js_sizes and js_prices:
+                        min_len = min(len(js_sizes), len(js_prices))
+                        for i in range(min_len):
+                            try:
+                                size_text = js_sizes[i].strip()
+                                price_text = js_prices[i].strip()
+                                
+                                # Обрабатываем размер
+                                if '(' in size_text:
+                                    size = size_text.split('(')[0].strip()
+                                else:
+                                    size = size_text
+                                
+                                # Обрабатываем цену
+                                price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
+                                if price_text_clean and price_text_clean != '-':
+                                    price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
+                                    try:
+                                        price_num = float(price_text_clean)
+                                        price_cents = int(price_num * 100)
+                                        sizes_prices.append({'size': size, 'price': price_cents})
+                                        print(f"      ✅ JS: {size} -> {price_cents} копеек ({price_num} ₽)")
+                                    except Exception as e:
+                                        print(f"      ⚠️ Error parsing JS price '{price_text}': {e}")
+                            except Exception as e:
+                                print(f"      ⚠️ Error processing JS element {i}: {e}")
+                                continue
             except Exception as e:
                 print(f"    ⚠️ Error in JavaScript approach: {e}")
+                import traceback
+                traceback.print_exc()
         
         print(f"  ✅ Selenium found {len(sizes_prices)} size-price pairs")
         return sizes_prices
@@ -1176,19 +1281,62 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             first_item = value[0]
                                             if isinstance(first_item, dict):
                                                 # Проверяем, есть ли в элементах skuId и price
-                                                if 'skuId' in first_item and any(price_key in first_item for price_key in ['price', 'money', 'minPrice', 'salePrice']):
+                                                has_sku_id = 'skuId' in first_item or 'id' in first_item
+                                                has_price = any(price_key in first_item for price_key in ['price', 'money', 'minPrice', 'salePrice', 'currentPrice', 'priceInfo', 'minUnitVal'])
+                                                if has_sku_id and has_price:
                                                     print(f"    🔍 Found potential price list in '{key}' with {len(value)} items")
                                                     for item in value:
-                                                        item_sku_id = item.get('skuId')
+                                                        item_sku_id = item.get('skuId') or item.get('id')
                                                         item_price = (item.get('price') or 
                                                                     item.get('money') or
                                                                     item.get('minPrice') or
-                                                                    item.get('salePrice'))
+                                                                    item.get('salePrice') or
+                                                                    item.get('currentPrice') or
+                                                                    item.get('priceInfo'))
                                                         if isinstance(item_price, dict):
-                                                            item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                            item_price = item_price.get('minUnitVal') or item_price.get('amount') or item_price.get('money')
+                                                            if isinstance(item_price, dict):
+                                                                item_price = item_price.get('minUnitVal') or item_price.get('amount')
                                                         if item_price and item_sku_id:
-                                                            sku_price_mapping[item_sku_id] = item_price
-                                                            print(f"      ✅ Found individual price: skuId={item_sku_id}, price={item_price}")
+                                                            # Конвертируем цену в копейки, если нужно
+                                                            if isinstance(item_price, (int, float)):
+                                                                if item_price < 1000:
+                                                                    item_price = int(item_price * 100)
+                                                                else:
+                                                                    item_price = int(item_price)
+                                                            elif isinstance(item_price, str):
+                                                                try:
+                                                                    price_num = float(item_price.replace(' ', '').replace(',', ''))
+                                                                    item_price = int(price_num * 100) if price_num < 1000 else int(price_num)
+                                                                except:
+                                                                    continue
+                                                            if item_sku_id not in sku_price_mapping or sku_price_mapping[item_sku_id] != item_price:
+                                                                sku_price_mapping[item_sku_id] = item_price
+                                                                print(f"      ✅ Found individual price: skuId={item_sku_id}, price={item_price} копеек")
+                                        elif isinstance(value, dict):
+                                            # Пробуем найти вложенные структуры с ценами
+                                            for sub_key, sub_value in value.items():
+                                                if isinstance(sub_value, list) and len(sub_value) > 0:
+                                                    first_sub_item = sub_value[0]
+                                                    if isinstance(first_sub_item, dict):
+                                                        has_sku_id = 'skuId' in first_sub_item or 'id' in first_sub_item
+                                                        has_price = any(price_key in first_sub_item for price_key in ['price', 'money', 'minPrice', 'salePrice'])
+                                                        if has_sku_id and has_price:
+                                                            print(f"    🔍 Found potential price list in '{key}.{sub_key}' with {len(sub_value)} items")
+                                                            for item in sub_value:
+                                                                item_sku_id = item.get('skuId') or item.get('id')
+                                                                item_price = (item.get('price') or 
+                                                                            item.get('money') or
+                                                                            item.get('minPrice') or
+                                                                            item.get('salePrice'))
+                                                                if isinstance(item_price, dict):
+                                                                    item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                                if item_price and item_sku_id:
+                                                                    if isinstance(item_price, (int, float)) and item_price < 1000:
+                                                                        item_price = int(item_price * 100)
+                                                                    if item_sku_id not in sku_price_mapping or sku_price_mapping[item_sku_id] != item_price:
+                                                                        sku_price_mapping[item_sku_id] = item_price
+                                                                        print(f"      ✅ Found individual price: skuId={item_sku_id}, price={item_price} копеек")
                             
                             if not size_mapping:
                                 print(f"  ⚠️ No size mapping found in baseProperties, trying alternative approach...")
