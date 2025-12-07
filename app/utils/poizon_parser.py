@@ -792,12 +792,12 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                 
                 for by, selector in modal_wait_selectors:
                     try:
-                        WebDriverWait(driver, 8).until(
+                        WebDriverWait(driver, 12).until(
                             EC.presence_of_element_located((by, selector))
                         )
                         print(f"    ✅ Modal window appeared (found via: {selector})")
                         modal_appeared = True
-                        time.sleep(3)  # Даем время на полную загрузку контента
+                        time.sleep(4)  # Увеличиваем время на полную загрузку контента
                         break
                     except:
                         continue
@@ -810,15 +810,16 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                         modal_exists = driver.execute_script("""
                             return document.querySelector('.ant-modal') !== null || 
                                    document.querySelector('[class*="modal"]') !== null ||
-                                   document.querySelector('[role="dialog"]') !== null;
+                                   document.querySelector('[role="dialog"]') !== null ||
+                                   document.querySelector('[class*="Modal"]') !== null;
                         """)
                         if modal_exists:
                             print(f"    ✅ Modal window found via JavaScript")
                             modal_appeared = True
-                            time.sleep(3)
+                            time.sleep(4)
                     except:
                         pass
-                    time.sleep(3)  # Даем еще немного времени
+                    time.sleep(4)  # Даем еще немного времени
             except Exception as e:
                 print(f"    ⚠️ Error waiting for modal: {e}")
                 time.sleep(3)
@@ -3055,18 +3056,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             if not title:
                 raise Exception("Не удалось найти название товара. Возможно, структура страницы изменилась или товар недоступен.")
             
-            if not price or price <= 0:
-                # Дополнительная отладочная информация
-                print("DEBUG: Price selectors found:")
-                for selector in ['.product-price', '.price', '[class*="price"]', '[data-price]']:
-                    elems = soup.select(selector)
-                    for elem in elems[:3]:
-                        print(f"  {selector}: {elem.get_text(strip=True)[:100]} (attrs: {dict(list(elem.attrs.items())[:3])})")
-                
-                raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru. Название товара найдено: '{title[:50]}...'")
-            
             # Используем минимальную цену из размеров, если она найдена, иначе основную цену
-            final_price = price
+            final_price = None
             if sizes_prices:
                 # Берем минимальную цену среди размеров (только размеры с ценой)
                 prices_with_values = [item['price'] for item in sizes_prices if item['price'] is not None]
@@ -3075,7 +3066,43 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     final_price = min_size_price
                     print(f"Using minimum size price: {final_price} копеек (from {len(prices_with_values)} sizes with prices, {len(sizes_prices)} total sizes)")
                 else:
-                    print(f"No prices found in sizes, using base price: {final_price} копеек")
+                    # Если нет цен в размерах, используем базовую цену
+                    if price and price > 0:
+                        final_price = price
+                        print(f"No prices found in sizes, using base price: {final_price} копеек")
+                    else:
+                        # Дополнительная отладочная информация
+                        print("DEBUG: No prices found in sizes and no base price, checking price selectors:")
+                        for selector in ['.product-price', '.price', '[class*="price"]', '[data-price]']:
+                            elems = soup.select(selector)
+                            for elem in elems[:3]:
+                                print(f"  {selector}: {elem.get_text(strip=True)[:100]} (attrs: {dict(list(elem.attrs.items())[:3])})")
+                        
+                        raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru. Название товара найдено: '{title[:50]}...'")
+            else:
+                # Если нет размеров, используем базовую цену
+                if price and price > 0:
+                    final_price = price
+                else:
+                    # Дополнительная отладочная информация
+                    print("DEBUG: No sizes and no base price, checking price selectors:")
+                    for selector in ['.product-price', '.price', '[class*="price"]', '[data-price]']:
+                        elems = soup.select(selector)
+                        for elem in elems[:3]:
+                            print(f"  {selector}: {elem.get_text(strip=True)[:100]} (attrs: {dict(list(elem.attrs.items())[:3])})")
+                    
+                    raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru. Название товара найдено: '{title[:50]}...'")
+            
+            # Проверяем, что финальная цена валидна
+            if not final_price or final_price <= 0:
+                # Дополнительная отладочная информация
+                print("DEBUG: Final price is invalid, checking price selectors:")
+                for selector in ['.product-price', '.price', '[class*="price"]', '[data-price]']:
+                    elems = soup.select(selector)
+                    for elem in elems[:3]:
+                        print(f"  {selector}: {elem.get_text(strip=True)[:100]} (attrs: {dict(list(elem.attrs.items())[:3])})")
+                
+                raise Exception(f"Не удалось найти цену товара. Проверьте формат страницы thepoizon.ru. Название товара найдено: '{title[:50]}...'")
             
             print(f"Successfully parsed product: {title[:50]}... (price: {final_price} копеек, images: {len(images)}, sizes: {len(sizes_prices)})")
             
