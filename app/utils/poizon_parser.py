@@ -159,6 +159,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             print(f"  DEBUG: images_data type: {type(images_data)}")
                             if isinstance(images_data, list):
                                 print(f"  DEBUG: images_data list length: {len(images_data)}")
+                                if len(images_data) > 0:
+                                    print(f"  DEBUG: First image item type: {type(images_data[0])}, value: {str(images_data[0])[:100]}")
+                                    if isinstance(images_data[0], dict):
+                                        print(f"  DEBUG: First image item keys: {list(images_data[0].keys())[:10]}")
                         
                         if images_data:
                             if isinstance(images_data, list):
@@ -1655,28 +1659,51 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     # Ищем все элементы, которые могут содержать размеры и цены
                     # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
                     page_text = soup.get_text()
+                    # Логируем небольшой фрагмент текста для отладки (ищем примеры размеров и цен)
+                    if '37,5' in page_text or '41' in page_text:
+                        # Находим фрагмент с размерами
+                        idx = page_text.find('37,5') or page_text.find('41')
+                        if idx > 0:
+                            sample = page_text[max(0, idx-50):idx+200]
+                            print(f"    DEBUG: Found size in text, sample: {sample[:150]}...")
                     
                     # Улучшенный паттерн: ищем "38 (39) 3 993 Р" или "40 (41) 3 741 Р" или "39,5 (40,5) 8 094 Р"
                     # ВАЖНО: размер должен быть строго в диапазоне 30-50, чтобы не находить части цены
                     # Ищем размер (30-50, может быть с запятой), затем опционально (EU размер), затем пробел и полная цена (минимум 4 цифры)
                     # Паттерн: размер (30-50 или 30.5-49.5), затем скобки с EU размером (опционально), затем пробел и цена (4+ цифр с пробелами)
+                    # Паттерн 1: размер без запятой "37,5 (38,5) 15 720 ₽" или "41 (42) 12 696 ₽"
                     size_price_pattern = re.compile(
-                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)(?:[,.]5)?\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})+)\s*[₽РP]',
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)(?:[,.]5)?\s*(?:\([^)]+\))?\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
                         re.IGNORECASE | re.MULTILINE
                     )
                     
-                    # Также пробуем паттерн для размеров с запятой: "38,5 (39,5) 6 329 Р"
+                    # Паттерн 2: размер с запятой "37,5 (38,5) 15 720 ₽" или "39,5 (40,5) 13 728 ₽"
                     size_price_pattern_comma = re.compile(
-                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)[,.]5\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})+)\s*[₽РP]',
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)[,.]5\s*(?:\([^)]+\))?\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
+                        re.IGNORECASE | re.MULTILINE
+                    )
+                    
+                    # Паттерн 3: более простой - размер и цена без скобок "37,5 15 720 ₽"
+                    size_price_pattern_simple = re.compile(
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)(?:[,.]5)?\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
                         re.IGNORECASE | re.MULTILINE
                     )
                     
                     matches = size_price_pattern.findall(page_text)
                     matches_comma = size_price_pattern_comma.findall(page_text)
-                    # Объединяем результаты
-                    all_matches = matches + matches_comma
-                    print(f"    Found {len(all_matches)} potential size-price pairs (main: {len(matches)}, comma: {len(matches_comma)})")
-                    matches = all_matches
+                    matches_simple = size_price_pattern_simple.findall(page_text)
+                    # Объединяем результаты, убираем дубликаты
+                    all_matches = matches + matches_comma + matches_simple
+                    # Убираем дубликаты по размеру
+                    seen = set()
+                    unique_matches = []
+                    for size_str, price_str in all_matches:
+                        key = (size_str, price_str)
+                        if key not in seen:
+                            seen.add(key)
+                            unique_matches.append((size_str, price_str))
+                    print(f"    Found {len(unique_matches)} potential size-price pairs (main: {len(matches)}, comma: {len(matches_comma)}, simple: {len(matches_simple)}, unique: {len(unique_matches)})")
+                    matches = unique_matches
                     
                     for idx, (size_str, price_str) in enumerate(matches):
                         try:
