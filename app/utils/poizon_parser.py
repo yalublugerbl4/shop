@@ -308,7 +308,17 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     for idx, prop_group in enumerate(base_props):
                                         if isinstance(prop_group, dict):
                                             prop_name = prop_group.get('propertyName') or prop_group.get('name') or prop_group.get('propertyType') or ''
-                                            print(f"    baseProperties[{idx}]: propertyName='{prop_name}', keys={list(prop_group.keys())[:10]}")
+                                            # Проверяем поле 'value' - возможно, там размер
+                                            prop_value = prop_group.get('value')
+                                            print(f"    baseProperties[{idx}]: propertyName='{prop_name}', value='{prop_value}', keys={list(prop_group.keys())[:10]}")
+                                            
+                                            # Если в 'value' есть число, похожее на размер
+                                            if prop_value and re.search(r'\d+[,.]?\d*', str(prop_value)):
+                                                # Проверяем, есть ли propertyValueId в этом элементе
+                                                value_id = prop_group.get('propertyValueId') or prop_group.get('id') or prop_group.get('key')
+                                                if value_id:
+                                                    size_mapping[value_id] = str(prop_value)
+                                                    print(f"      ✅ Mapped size from value: {value_id} -> {prop_value}")
                                             
                                             # Ищем группу с размерами (может быть 'размер', 'Size', 'size', 'RU', 'EU' и т.д.)
                                             prop_name_lower = str(prop_name).lower()
@@ -361,16 +371,63 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             # Пробуем найти цены для каждого SKU - возможно, цены в каждом SKU или в отдельном массиве
                             sku_price_mapping = {}  # skuId -> price
                             
-                            # Сначала ищем цены в каждом SKU
-                            for sku in skus:
+                            # Сначала ищем цены в каждом SKU - детальный поиск
+                            print(f"  DEBUG: Searching for prices in {len(skus)} SKUs...")
+                            for idx, sku in enumerate(skus):
                                 sku_id = sku.get('skuId')
-                                # Ищем цену в самом SKU
+                                if idx < 3:  # Логируем первые 3 SKU для анализа
+                                    print(f"    SKU {idx+1} (skuId={sku_id}) keys: {list(sku.keys())[:15]}")
+                                
+                                # Ищем цену в самом SKU - расширенный поиск
                                 sku_price = (sku.get('price') or 
                                             sku.get('salePrice') or 
                                             sku.get('currentPrice') or
-                                            sku.get('priceValue'))
+                                            sku.get('priceValue') or
+                                            sku.get('priceInfo') or
+                                            sku.get('money') or
+                                            sku.get('lowPrice') or
+                                            sku.get('highPrice'))
+                                
+                                # Если price - словарь, извлекаем значение
+                                if isinstance(sku_price, dict):
+                                    sku_price = (sku_price.get('minUnitVal') or 
+                                                sku_price.get('amount') or
+                                                sku_price.get('money') or
+                                                sku_price.get('price') or
+                                                sku_price.get('salePrice'))
+                                
                                 if sku_price and sku_id:
                                     sku_price_mapping[sku_id] = sku_price
+                                    if idx < 3:
+                                        print(f"      Found price in SKU: {sku_price}")
+                            
+                            # Ищем цены в других местах product_data
+                            print(f"  DEBUG: Searching for price arrays in product_data...")
+                            price_related_keys = [k for k in product_data.keys() if any(word in str(k).lower() for word in ['price', 'sku', 'money', 'cost'])]
+                            if price_related_keys:
+                                print(f"    Found price-related keys: {price_related_keys}")
+                                for key in price_related_keys:
+                                    value = product_data[key]
+                                    if isinstance(value, list) and len(value) > 0:
+                                        print(f"      {key} is a list with {len(value)} items")
+                                        if isinstance(value[0], dict):
+                                            print(f"        First item keys: {list(value[0].keys())[:10]}")
+                                            # Пробуем построить маппинг
+                                            for item in value:
+                                                if isinstance(item, dict):
+                                                    item_sku_id = item.get('skuId') or item.get('id') or item.get('sku')
+                                                    item_price = (item.get('price') or 
+                                                                item.get('money') or
+                                                                item.get('salePrice') or
+                                                                item.get('currentPrice') or
+                                                                item.get('priceValue'))
+                                                    if isinstance(item_price, dict):
+                                                        item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                    if item_price and item_sku_id:
+                                                        sku_price_mapping[item_sku_id] = item_price
+                                                        print(f"          Mapped price: skuId={item_sku_id}, price={item_price}")
+                                    elif isinstance(value, dict):
+                                        print(f"      {key} is a dict with keys: {list(value.keys())[:10]}")
                             
                             # Также пробуем найти массив цен в product_data
                             price_list = None
@@ -388,29 +445,52 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                         if isinstance(base_price_money, dict):
                                             base_price_money = base_price_money.get('minUnitVal') or base_price_money.get('amount')
                                     
-                                    # Ищем список цен по SKU
+                                    # Ищем список цен по SKU - расширенный поиск
                                     price_list = (price_data.get('skuList') or 
                                                  price_data.get('priceList') or
                                                  price_data.get('list') or
                                                  price_data.get('skus') or
-                                                 price_data.get('skuPrices'))
+                                                 price_data.get('skuPrices') or
+                                                 price_data.get('skuPriceList') or
+                                                 price_data.get('priceMap') or
+                                                 price_data.get('skuPriceMap'))
                                     
                                     # Если есть массив цен, строим маппинг
                                     if price_list and isinstance(price_list, list):
                                         print(f"  DEBUG: Found price_list with {len(price_list)} items")
                                         for price_item in price_list:
                                             if isinstance(price_item, dict):
-                                                item_sku_id = price_item.get('skuId') or price_item.get('id')
+                                                item_sku_id = price_item.get('skuId') or price_item.get('id') or price_item.get('sku')
                                                 item_price = (price_item.get('money') or 
                                                             price_item.get('price') or 
                                                             price_item.get('salePrice') or
                                                             price_item.get('currentPrice') or
-                                                            price_item.get('priceValue'))
+                                                            price_item.get('priceValue') or
+                                                            price_item.get('priceInfo'))
                                                 if item_price and item_sku_id:
                                                     # Если price - словарь с minUnitVal
                                                     if isinstance(item_price, dict):
-                                                        item_price = item_price.get('minUnitVal') or item_price.get('amount')
-                                                    sku_price_mapping[item_sku_id] = item_price
+                                                        item_price = item_price.get('minUnitVal') or item_price.get('amount') or item_price.get('money')
+                                                    if item_price:
+                                                        sku_price_mapping[item_sku_id] = item_price
+                                                        print(f"        Mapped price from price_list: skuId={item_sku_id}, price={item_price}")
+                                    
+                                    # Также проверяем, может быть price_data - это словарь с ключами-скидками
+                                    if isinstance(price_data, dict):
+                                        # Ищем вложенные структуры с ценами
+                                        for key, value in price_data.items():
+                                            if key != 'money' and isinstance(value, (list, dict)):
+                                                if isinstance(value, list) and len(value) > 0:
+                                                    if isinstance(value[0], dict):
+                                                        # Возможно, это массив цен
+                                                        for item in value:
+                                                            if isinstance(item, dict):
+                                                                item_sku_id = item.get('skuId') or item.get('id')
+                                                                item_price = item.get('price') or item.get('money')
+                                                                if isinstance(item_price, dict):
+                                                                    item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                                if item_price and item_sku_id:
+                                                                    sku_price_mapping[item_sku_id] = item_price
                                 elif isinstance(price_data, list):
                                     price_list = price_data
                                     print(f"  DEBUG: price is a list with {len(price_list)} items")
@@ -476,17 +556,29 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     price_value = sku_price_mapping[sku_id]
                                     print(f"    SKU {idx+1}: Found price in mapping: {price_value}")
                                 else:
-                                    # Пробуем найти цену в самом SKU
+                                    # Пробуем найти цену в самом SKU - расширенный поиск
                                     price_value = (sku.get('price') or 
                                                  sku.get('salePrice') or 
                                                  sku.get('currentPrice') or
                                                  sku.get('priceValue') or
                                                  sku.get('lowPrice') or
-                                                 sku.get('highPrice'))
+                                                 sku.get('highPrice') or
+                                                 sku.get('money'))
                                     
                                     # Если price - словарь с money/minUnitVal
                                     if isinstance(price_value, dict):
-                                        price_value = price_value.get('minUnitVal') or price_value.get('amount')
+                                        price_value = price_value.get('minUnitVal') or price_value.get('amount') or price_value.get('money')
+                                    
+                                    # Пробуем найти в priceInfo
+                                    if not price_value:
+                                        price_info = sku.get('priceInfo')
+                                        if isinstance(price_info, dict):
+                                            price_value = (price_info.get('money') or
+                                                         price_info.get('price') or
+                                                         price_info.get('salePrice') or
+                                                         price_info.get('currentPrice'))
+                                            if isinstance(price_value, dict):
+                                                price_value = price_value.get('minUnitVal') or price_value.get('amount')
                                     
                                     # Если не нашли, пробуем найти в price_list по skuId
                                     if not price_value and price_list and isinstance(price_list, list) and sku_id:
@@ -504,6 +596,30 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                         price_value = price_value.get('minUnitVal') or price_value.get('amount')
                                                     if price_value:
                                                         print(f"    SKU {idx+1}: Found price in price_list: {price_value}")
+                                                    break
+                                    
+                                    # Если не нашли, пробуем найти в product_data по skuId (может быть отдельный массив)
+                                    if not price_value and sku_id:
+                                        # Ищем во всех массивах product_data
+                                        for key, value in product_data.items():
+                                            if isinstance(value, list) and len(value) > 0:
+                                                for item in value:
+                                                    if isinstance(item, dict):
+                                                        item_sku_id = item.get('skuId') or item.get('id')
+                                                        if item_sku_id == sku_id:
+                                                            item_price = (item.get('price') or 
+                                                                        item.get('money') or
+                                                                        item.get('salePrice') or
+                                                                        item.get('currentPrice'))
+                                                            if isinstance(item_price, dict):
+                                                                item_price = item_price.get('minUnitVal') or item_price.get('amount')
+                                                            if item_price:
+                                                                price_value = item_price
+                                                                print(f"    SKU {idx+1}: Found price in product_data['{key}']: {price_value}")
+                                                                break
+                                                    if price_value:
+                                                        break
+                                                if price_value:
                                                     break
                                 
                                 # Если не нашли индивидуальную цену, используем базовую цену (для всех размеров одинаковая)
