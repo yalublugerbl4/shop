@@ -1281,10 +1281,15 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
+async def parse_poizon_product(url: str, use_selenium: bool = True, skip_size_guide: bool = False) -> Optional[Dict[str, Any]]:
     """
     Парсит товар с thepoizon.ru по URL
     Возвращает данные товара для создания в БД
+    
+    Args:
+        url: URL товара на thepoizon.ru
+        use_selenium: Использовать Selenium для парсинга размеров (медленно, но точнее)
+        skip_size_guide: Пропустить парсинг гайда размеров (ускоряет парсинг)
     """
     try:
         # Проверяем, что URL валидный
@@ -2948,7 +2953,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         need_selenium = False  # Не нужно использовать Selenium, если нашли в HTML
             
-            if need_selenium:
+            if need_selenium and use_selenium:
                 print(f"  🚀 Using Selenium to parse sizes and prices...")
                 selenium_sizes_prices = _parse_sizes_prices_with_selenium(url)
                 if selenium_sizes_prices:
@@ -2960,33 +2965,38 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         print(f"  ⚠️ Selenium found sizes but all prices are still the same")
                 else:
                     print(f"  ⚠️ Selenium didn't find sizes/prices, using existing data if available")
+            elif need_selenium and not use_selenium:
+                print(f"  ⚠️ Selenium disabled, skipping Selenium parsing (using existing data)")
             
-            # Парсим гайд размеров через Selenium (всегда, независимо от того, использовали ли Selenium для размеров)
-            print(f"  📏 [SIZE GUIDE] Starting size guide parsing...")
-            print(f"  📏 Trying to parse size guide with Selenium...")
-            try:
-                driver = _create_selenium_driver()
-                if driver:
-                    driver.get(url)
-                    time.sleep(5)
-                    # Пробуем закрыть модальное окно, если есть
-                    try:
-                        button = WebDriverWait(driver, 5).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
-                        driver.execute_script("arguments[0].click();", button)
-                        time.sleep(1)
-                    except:
-                        pass
-                    size_guide = _parse_size_guide_with_selenium(driver)
-                    driver.quit()
-                    if size_guide:
-                        print(f"  ✅ Size guide parsed successfully: {len(size_guide.get('rows', []))} rows")
-                    else:
-                        print(f"  ⚠️ Size guide not found on page")
-            except Exception as e:
-                print(f"  ⚠️ Error parsing size guide: {e}")
-                import traceback
-                traceback.print_exc()
+            # Парсим гайд размеров через Selenium (только если не пропущен)
+            if not skip_size_guide:
+                print(f"  📏 [SIZE GUIDE] Starting size guide parsing...")
+                print(f"  📏 Trying to parse size guide with Selenium...")
+                try:
+                    driver = _create_selenium_driver()
+                    if driver:
+                        driver.get(url)
+                        time.sleep(5)
+                        # Пробуем закрыть модальное окно, если есть
+                        try:
+                            button = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
+                            driver.execute_script("arguments[0].click();", button)
+                            time.sleep(1)
+                        except:
+                            pass
+                        size_guide = _parse_size_guide_with_selenium(driver)
+                        driver.quit()
+                        if size_guide:
+                            print(f"  ✅ Size guide parsed successfully: {len(size_guide.get('rows', []))} rows")
+                        else:
+                            print(f"  ⚠️ Size guide not found on page")
+                except Exception as e:
+                    print(f"  ⚠️ Error parsing size guide: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"  ⏭️ Skipping size guide parsing (disabled)")
             
             # Формируем описание из размеров и цен (только из Selenium или __NEXT_DATA__)
             if sizes_prices:

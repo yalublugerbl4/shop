@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field, validator
 from typing import Optional
 import asyncio
@@ -15,21 +15,8 @@ class UpdatePricesRequest(BaseModel):
     max_products: Optional[int] = Field(100, ge=1, le=1000, description="Максимальное количество товаров для обновления")
 
 
-@router.post("/update-prices")
-async def update_prices(request: UpdatePricesRequest):
-    """
-    Обновление цен и размеров для всех товаров с source_url
-    Используется для cron-задач (раз в сутки)
-    Требует токен из переменной окружения CRON_TOKEN
-    """
-    cron_token = os.getenv('CRON_TOKEN', '')
-    
-    if not cron_token or request.token != cron_token:
-        raise HTTPException(
-            status_code=401,
-            detail={"error": {"code": "UNAUTHORIZED", "message": "Invalid token"}}
-        )
-    
+async def _update_prices_background(max_products: int):
+    """Фоновая задача для обновления цен"""
     results = {
         "total_products": 0,
         "updated": [],
@@ -43,14 +30,12 @@ async def update_prices(request: UpdatePricesRequest):
         results["total_products"] = len(products)
         
         if not products:
-            return {
-                **results,
-                "status": "completed",
-                "message": "Нет товаров для обновления"
-            }
+            results["status"] = "completed"
+            results["message"] = "Нет товаров для обновления"
+            return
         
         # Ограничиваем количество
-        products = products[:request.max_products]
+        products = products[:max_products]
         
         print(f"Updating prices for {len(products)} products...")
         
@@ -59,8 +44,8 @@ async def update_prices(request: UpdatePricesRequest):
                 print(f"Updating product {idx}/{len(products)}: {product['title'][:50]}...")
                 source_url = product['source_url']
                 
-                # Парсим товар заново
-                parsed = await parse_poizon_product(source_url)
+                # Парсим товар заново (без Selenium для скорости)
+                parsed = await parse_poizon_product(source_url, use_selenium=False, skip_size_guide=True)
                 
                 if parsed:
                     # Обновляем только цену и описание (размеры и цены)
@@ -98,18 +83,50 @@ async def update_prices(request: UpdatePricesRequest):
                 })
                 print(f"Error updating {product['source_url']}: {e}")
             
-            # Задержка между запросами
+            # Уменьшенная задержка между запросами (1 секунда вместо 2)
             if idx < len(products):
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
         
         results["status"] = "completed"
+        print(f"✅ Price update completed: {len(results['updated'])} updated, {len(results['failed'])} failed")
         
     except Exception as e:
         results["status"] = "error"
         results["error"] = str(e)
         print(f"Error updating prices: {e}")
+
+
+@router.post("/update-prices")
+async def update_prices(
+    request: UpdatePricesRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Обновление цен и размеров для всех товаров с source_url
+    Используется для cron-задач (раз в сутки)
+    Требует токен из переменной окружения CRON_TOKEN
+    Запускает обновление в фоне, чтобы не превышать таймауты n8n
+    """
+    cron_token = os.getenv('CRON_TOKEN', '')
     
-    return results
+    if not cron_token or request.token != cron_token:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": {"code": "UNAUTHORIZED", "message": "Invalid token"}}
+        )
+    
+    # Запускаем обновление в фоне
+    background_tasks.add_task(
+        _update_prices_background,
+        request.max_products
+    )
+    
+    # Сразу возвращаем ответ, чтобы n8n не ждал
+    return {
+        "status": "started",
+        "message": "Обновление цен запущено в фоне",
+        "max_products": request.max_products
+    }
 
 
 class ParseCategoryRequest(BaseModel):
@@ -118,6 +135,8 @@ class ParseCategoryRequest(BaseModel):
     category: str = Field(..., min_length=1, description="Категория товара для сохранения в БД")
     season: Optional[str] = Field(None)
     max_products: Optional[int] = Field(200, ge=1, le=500, description="Максимальное количество товаров для парсинга")
+    use_selenium: Optional[bool] = Field(False, description="Использовать Selenium для парсинга (медленно, но точнее)")
+    skip_size_guide: Optional[bool] = Field(True, description="Пропустить парсинг гайда размеров (ускоряет парсинг)")
     
     @validator('category_url')
     def validate_category_url(cls, v):
@@ -134,22 +153,15 @@ class ParseCategoryRequest(BaseModel):
         return v
 
 
-@router.post("/parse-category")
-async def parse_category_cron(request: ParseCategoryRequest):
-    """
-    Автоматический парсинг категории через cron
-    Используется для автоматического парсинга категорий (например, раз в день)
-    Требует токен из переменной окружения CRON_TOKEN
-    """
-    
-    cron_token = os.getenv('CRON_TOKEN', '')
-    
-    if not cron_token or request.token != cron_token:
-        raise HTTPException(
-            status_code=401,
-            detail={"error": {"code": "UNAUTHORIZED", "message": "Invalid token"}}
-        )
-    
+async def _parse_category_background(
+    category_url: str,
+    category: str,
+    season: Optional[str],
+    max_products: int,
+    use_selenium: bool,
+    skip_size_guide: bool
+):
+    """Фоновая задача для парсинга категории"""
     results = {
         "total_links_found": 0,
         "success": [],
@@ -159,21 +171,19 @@ async def parse_category_cron(request: ParseCategoryRequest):
     
     try:
         # Шаг 1: Собираем все ссылки на товары из категории
-        print(f"Extracting product links from category: {request.category_url}")
-        product_links = await extract_product_links_from_category(request.category_url)
+        print(f"Extracting product links from category: {category_url}")
+        product_links = await extract_product_links_from_category(category_url)
         
         results["total_links_found"] = len(product_links)
         print(f"Found {len(product_links)} product links")
         
         if not product_links:
-            return {
-                **results,
-                "status": "completed",
-                "message": "Не найдено товаров в категории"
-            }
+            results["status"] = "completed"
+            results["message"] = "Не найдено товаров в категории"
+            return
         
         # Ограничиваем количество
-        product_links = product_links[:request.max_products]
+        product_links = product_links[:max_products]
         
         # Шаг 2: Парсим каждый товар
         print(f"Parsing {len(product_links)} products...")
@@ -194,12 +204,12 @@ async def parse_category_cron(request: ParseCategoryRequest):
                     })
                     continue
                 
-                parsed = await parse_poizon_product(url)
+                parsed = await parse_poizon_product(url, use_selenium=use_selenium, skip_size_guide=skip_size_guide)
                 
                 if parsed:
                     product_data = {
-                        'category': request.category,
-                        'season': request.season,
+                        'category': category,
+                        'season': season,
                         'title': parsed['title'],
                         'description': parsed.get('description', ''),
                         'price_cents': parsed['price_cents'],
@@ -227,16 +237,57 @@ async def parse_category_cron(request: ParseCategoryRequest):
                 })
                 print(f"Error parsing {url}: {e}")
             
-            # Задержка между запросами
+            # Уменьшенная задержка между запросами (1 секунда вместо 2)
             if idx < len(product_links):
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
         
         results["status"] = "completed"
+        print(f"✅ Category parsing completed: {len(results['success'])} success, {len(results['failed'])} failed")
         
     except Exception as e:
         results["status"] = "error"
         results["error"] = str(e)
         print(f"Error parsing category: {e}")
+
+
+@router.post("/parse-category")
+async def parse_category_cron(
+    request: ParseCategoryRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Автоматический парсинг категории через cron
+    Используется для автоматического парсинга категорий (например, раз в день)
+    Требует токен из переменной окружения CRON_TOKEN
+    Запускает парсинг в фоне, чтобы не превышать таймауты n8n
+    """
     
-    return results
+    cron_token = os.getenv('CRON_TOKEN', '')
+    
+    if not cron_token or request.token != cron_token:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": {"code": "UNAUTHORIZED", "message": "Invalid token"}}
+        )
+    
+    # Запускаем парсинг в фоне
+    background_tasks.add_task(
+        _parse_category_background,
+        request.category_url,
+        request.category,
+        request.season,
+        request.max_products,
+        request.use_selenium,
+        request.skip_size_guide
+    )
+    
+    # Сразу возвращаем ответ, чтобы n8n не ждал
+    return {
+        "status": "started",
+        "message": "Парсинг категории запущен в фоне",
+        "category_url": request.category_url,
+        "max_products": request.max_products,
+        "use_selenium": request.use_selenium,
+        "skip_size_guide": request.skip_size_guide
+    }
 
