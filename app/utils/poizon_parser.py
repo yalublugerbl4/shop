@@ -16,7 +16,7 @@ import time
 def _create_selenium_driver():
     """Создает и настраивает Selenium WebDriver"""
     try:
-        ua = UserAgent(platforms='pc')
+        ua = UserAgent()
         options = Options()
         options.add_argument('--headless')  # Запускаем в фоновом режиме
         options.add_argument('--no-sandbox')
@@ -33,6 +33,8 @@ def _create_selenium_driver():
         return driver
     except Exception as e:
         print(f"Error creating Selenium driver: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def _parse_sizes_prices_with_selenium(url: str) -> list:
@@ -1917,15 +1919,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     # ВАЖНО: размер должен быть строго в диапазоне 30-50, чтобы не находить части цены
                     # Ищем размер (30-50, может быть с запятой), затем опционально (EU размер), затем пробел и полная цена (минимум 4 цифры)
                     # Паттерн: размер (30-50 или 30.5-49.5), затем скобки с EU размером (опционально), затем пробел и цена (4+ цифр с пробелами)
-                    # Паттерн 1: размер без запятой "37,5 (38,5) 15 720 ₽" или "41 (42) 12 696 ₽"
+                    # Паттерн 1: размер без запятой "37,5 (38,5) 15 720 ₽" или "41 (42) 12 696 ₽" или "37,5(38,5)12 881 ₽"
+                    # Убрали обязательный пробел между скобками и ценой, так как в тексте может быть "37,5(38,5)12 881 ₽"
                     size_price_pattern = re.compile(
-                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)(?:[,.]5)?\s*(?:\([^)]+\))?\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)(?:[,.]5)?(?:\([^)]+\))?\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
                         re.IGNORECASE | re.MULTILINE
                     )
                     
-                    # Паттерн 2: размер с запятой "37,5 (38,5) 15 720 ₽" или "39,5 (40,5) 13 728 ₽"
+                    # Паттерн 2: размер с запятой "37,5 (38,5) 15 720 ₽" или "39,5 (40,5) 13 728 ₽" или "37,5(38,5)12 881 ₽"
                     size_price_pattern_comma = re.compile(
-                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)[,.]5\s*(?:\([^)]+\))?\s+(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)[,.]5(?:\([^)]+\))?\s*(\d{1,2}(?:\s?\d{3})+)\s*[₽РP]',
                         re.IGNORECASE | re.MULTILINE
                     )
                     
