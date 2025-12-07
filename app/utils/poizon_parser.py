@@ -899,7 +899,19 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                 return None
         
         # Даем дополнительное время на загрузку контента внутри модального окна
-        time.sleep(2)
+        time.sleep(3)
+        
+        # Пробуем прокрутить модальное окно, чтобы загрузить контент
+        try:
+            if not is_link:
+                # Прокручиваем модальное окно
+                modal_elem = driver.find_element(By.CSS_SELECTOR, '.ant-modal, [class*="modal"]')
+                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight / 2;", modal_elem)
+                time.sleep(1)
+                driver.execute_script("arguments[0].scrollTop = 0;", modal_elem)
+                time.sleep(1)
+        except:
+            pass
         
         # Ищем таблицу с размерами (используем все найденные таблицы, если модальное окно не найдено)
         table_selectors = [
@@ -908,6 +920,7 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             '.ant-modal-body table',
             '.ant-modal-body .ant-table table',
             '.ant-modal-body .ant-table-tbody table',
+            '.ant-modal-body .ant-table-wrapper table',
             '[class*="SizeGuide"] table',
             '[class*="size-guide"] table',
             '[class*="Table"]',
@@ -2794,7 +2807,27 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     unique_html_prices = set(item['price'] for item in html_sizes_prices if item['price'] is not None)
                     if len(unique_html_prices) > 1:  # Если нашли разные цены
                         print(f"  ✅ Found {len(html_sizes_prices)} size-price pairs from HTML (with {len(unique_html_prices)} different prices)")
-                        sizes_prices = html_sizes_prices
+                        # Объединяем размеры из HTML с размерами из __NEXT_DATA__, приоритет у HTML (если есть цена)
+                        # Создаем словарь для быстрого поиска размеров из HTML
+                        html_sizes_dict = {item['size']: item for item in html_sizes_prices}
+                        
+                        # Обновляем цены в существующих размерах из __NEXT_DATA__, если они есть в HTML
+                        for item in sizes_prices:
+                            size_key = item['size']
+                            if size_key in html_sizes_dict:
+                                html_item = html_sizes_dict[size_key]
+                                # Обновляем цену, если в HTML есть цена
+                                if html_item['price'] is not None:
+                                    item['price'] = html_item['price']
+                                    print(f"    ✅ Updated price for size {size_key} from HTML: {html_item['price']/100} ₽")
+                        
+                        # Добавляем размеры из HTML, которых нет в __NEXT_DATA__
+                        existing_sizes = {item['size'] for item in sizes_prices}
+                        for html_item in html_sizes_prices:
+                            if html_item['size'] not in existing_sizes:
+                                sizes_prices.append(html_item)
+                                print(f"    ✅ Added size {html_item['size']} from HTML")
+                        
                         need_selenium = False  # Не нужно использовать Selenium, если нашли в HTML
             
             if need_selenium:
