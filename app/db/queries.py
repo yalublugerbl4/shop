@@ -49,16 +49,23 @@ def get_products(
             params = []
             
             if category:
-                if category in MAIN_CATEGORIES_WITH_SUBCATEGORIES:
-                    subcategories = MAIN_CATEGORIES_WITH_SUBCATEGORIES[category]
-                    if subcategories:
-                        all_categories = [category] + subcategories
-                        placeholders = ','.join(['%s'] * len(all_categories))
-                        query += f' AND category IN ({placeholders})'
-                        params.extend(all_categories)
-                    else:
+                all_values = []
+                for main_cat, sub_cats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.items():
+                    if main_cat == category:
+                        all_values = [main_cat] + sub_cats
+                        break
+                    if category in sub_cats:
+                        all_values = [category]
+                        break
+                
+                if all_values:
+                    if len(all_values) == 1:
                         query += ' AND category = %s'
-                        params.append(category)
+                        params.append(all_values[0])
+                    else:
+                        placeholders = ','.join(['%s'] * len(all_values))
+                        query += f' AND category IN ({placeholders})'
+                        params.extend(all_values)
                 else:
                     query += ' AND category = %s'
                     params.append(category)
