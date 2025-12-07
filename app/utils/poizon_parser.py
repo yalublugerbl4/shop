@@ -47,7 +47,7 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             return []
         
         driver.get(url)
-        time.sleep(2)  # Ждем загрузки страницы
+        time.sleep(3)  # Ждем загрузки страницы
         
         # Пробуем закрыть модальное окно, если есть
         try:
@@ -57,6 +57,10 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             time.sleep(1)
         except:
             pass
+        
+        # Прокручиваем страницу вниз, чтобы загрузились все элементы
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        time.sleep(1)
         
         sizes_prices = []
         
@@ -106,12 +110,24 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                 
                 if menu_count == 1:
                     # Одно меню: размеры и цены в nth-child(1)
+                    # Ждем появления элементов
+                    try:
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX')))
+                    except:
+                        pass
+                    
                     size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
                     price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                    
+                    print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
                     
                     if size_elements and price_elements:
                         for size_elem, price_elem in zip(size_elements, price_elements):
                             size = size_elem.get_attribute('textContent').strip()
+                            # Извлекаем только RU размер (до скобки, если есть)
+                            if '(' in size:
+                                size = size.split('(')[0].strip()
                             price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
                             
                             try:
@@ -122,7 +138,8 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                                 
                                 sizes_prices.append({'size': size, 'price': price_cents})
                                 print(f"      ✅ {size} -> {price_cents} копеек")
-                            except:
+                            except Exception as e:
+                                print(f"      ⚠️ Error parsing {size} -> {price_text}: {e}")
                                 pass
                 elif menu_count == 2:
                     # Два меню (цвет): размеры и цены в nth-child(2)
@@ -2061,15 +2078,21 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 print(f"    ✅ Updated price for size {size_key}: {original_price} -> {item['price']} копеек")
                                 updated_count += 1
                         else:
-                            # Пробуем найти похожий размер (например, "43" и "43,0" или "38" и "38 (39)")
-                            size_key_normalized = size_key.replace(',', '.')
+                            # Пробуем найти похожий размер (например, "43" и "43,0" или "38" и "38,5")
+                            # Извлекаем числовое значение размера (убираем запятые, скобки и т.д.)
+                            size_key_clean = size_key.split('(')[0].strip()  # Берем только до скобки
+                            size_key_normalized = size_key_clean.replace(',', '.')
+                            
                             for html_size, html_price in html_price_map.items():
-                                html_size_normalized = html_size.replace(',', '.')
+                                html_size_clean = html_size.split('(')[0].strip()  # Берем только до скобки
+                                html_size_normalized = html_size_clean.replace(',', '.')
+                                
                                 # Сравниваем числовые значения размеров
                                 try:
                                     size_key_num = float(size_key_normalized)
                                     html_size_num = float(html_size_normalized)
-                                    if abs(size_key_num - html_size_num) < 0.1:  # Размеры совпадают
+                                    # Размеры совпадают если разница меньше 0.6 (например, 38 и 38,5)
+                                    if abs(size_key_num - html_size_num) < 0.6:
                                         item['price'] = html_price
                                         if item['price'] != original_price:
                                             print(f"    ✅ Updated price for size {size_key} (matched {html_size}): {original_price} -> {item['price']} копеек")
