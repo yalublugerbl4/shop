@@ -55,7 +55,7 @@ def get_products(
                         all_values = [main_cat] + sub_cats
                         break
                     if category in sub_cats:
-                        all_values = [category]
+                        all_values = [main_cat, category]
                         break
                 
                 if all_values:
