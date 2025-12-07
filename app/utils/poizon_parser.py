@@ -1589,9 +1589,9 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Total found {len(found_urls)} image URLs before downloading")
             
-            # Скачиваем и конвертируем изображения (фильтруем AI-изображения и подошвы)
+            # Скачиваем и конвертируем изображения (пропускаем первое, фильтруем AI-изображения)
             if found_urls:
-                # Фильтруем изображения: убираем AI-изображения и подошвы, приоритизируем реальные фото
+                # Фильтруем изображения: убираем AI-изображения, пропускаем первое
                 images_to_download = []
                 ai_images = []
                 
@@ -1603,12 +1603,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         ai_images.append(img_url)
                         continue
                     
-                    # Пропускаем подошвы/стопы (только для первого изображения)
+                    # Пропускаем первое изображение (как просил пользователь)
                     if idx == 0:
-                        skip_keywords = ['sole', 'подошв', 'стоп', 'bottom', 'underside', 'outsole', 'midsole']
-                        if any(keyword in img_url_lower for keyword in skip_keywords):
-                            print(f"  ⏭️ Skipping first image (detected as sole): {img_url[:80]}...")
-                            continue
+                        print(f"  ⏭️ Skipping first image: {img_url[:80]}...")
+                        continue
                     
                     images_to_download.append(img_url)
                     if len(images_to_download) >= 10:
@@ -2105,6 +2103,17 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             # Формируем описание из размеров и цен
             if sizes_prices:
+                # Сортируем размеры от меньшего к большему
+                def sort_key(item):
+                    size_str = item['size'].split('(')[0].strip()  # Берем только RU размер
+                    try:
+                        return float(size_str.replace(',', '.'))
+                    except:
+                        return 0
+                
+                sizes_prices.sort(key=sort_key)
+                print(f"  📊 Sorted {len(sizes_prices)} sizes from smallest to largest")
+                
                 description_lines = ["Размеры и цены:"]
                 for item in sizes_prices:
                     price_rub = item['price'] / 100
