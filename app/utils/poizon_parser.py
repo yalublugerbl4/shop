@@ -1339,9 +1339,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                   img.get('src'))
                         
                         if img_url:
-                            # Пропускаем миниатюры, иконки, логотипы
+                            # Пропускаем миниатюры, иконки, логотипы, AI-изображения
                             img_url_lower = img_url.lower()
-                            if any(skip in img_url_lower for skip in ['thumb', 'icon', 'placeholder', 'logo', 'avatar', 'default']):
+                            skip_keywords = ['thumb', 'icon', 'placeholder', 'logo', 'avatar', 'default', 'ai/generate', 'ai_generate']
+                            if any(skip in img_url_lower for skip in skip_keywords):
                                 continue
                             
                             # Нормализуем URL
@@ -1381,21 +1382,38 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Total found {len(found_urls)} image URLs before downloading")
             
-            # Скачиваем и конвертируем изображения (пропускаем первое только если это явно подошва/стопа)
+            # Скачиваем и конвертируем изображения (фильтруем AI-изображения и подошвы)
             if found_urls:
-                # Проверяем первое изображение - пропускаем только если это подошва
+                # Фильтруем изображения: убираем AI-изображения и подошвы, приоритизируем реальные фото
                 images_to_download = []
+                ai_images = []
+                
                 for idx, img_url in enumerate(found_urls):
+                    img_url_lower = img_url.lower()
+                    
+                    # Пропускаем AI-изображения
+                    if 'ai/generate' in img_url_lower or 'ai_generate' in img_url_lower:
+                        ai_images.append(img_url)
+                        continue
+                    
+                    # Пропускаем подошвы/стопы (только для первого изображения)
                     if idx == 0:
-                        # Проверяем URL на признаки подошвы/стопы
-                        img_url_lower = img_url.lower()
                         skip_keywords = ['sole', 'подошв', 'стоп', 'bottom', 'underside', 'outsole', 'midsole']
                         if any(keyword in img_url_lower for keyword in skip_keywords):
                             print(f"  ⏭️ Skipping first image (detected as sole): {img_url[:80]}...")
                             continue
+                    
                     images_to_download.append(img_url)
                     if len(images_to_download) >= 10:
                         break
+                
+                # Если реальных изображений мало, добавляем AI-изображения в конец
+                if len(images_to_download) < 5 and ai_images:
+                    print(f"  ⚠️ Only {len(images_to_download)} real images found, adding {len(ai_images)} AI images...")
+                    for ai_img in ai_images[:5]:
+                        if len(images_to_download) >= 10:
+                            break
+                        images_to_download.append(ai_img)
                 max_images = len(images_to_download)
                 
                 for idx, img_url in enumerate(images_to_download, 1):
@@ -1628,9 +1646,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
                         page_text = soup.get_text()
                         
-                        # Ищем паттерны типа "39 (40) 10 201 ₽" или "39,5 10 093 ₽"
+                        # Улучшенный паттерн: ищем "38 (39) 3 993 Р" или "40 (41) 3 741 Р"
+                        # Паттерн должен искать размер перед ценой, а не наоборот
                         size_price_pattern = re.compile(
-                            r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s*(\d{1,3}(?:\s?\d{3})*)\s*[₽P]',
+                            r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
                             re.IGNORECASE
                         )
                         
@@ -1639,24 +1658,28 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         for size_str, price_str in matches:
                             try:
-                                # Очищаем размер
-                                size_clean = size_str.replace(',', ',')
+                                # Очищаем размер - оставляем запятую как есть
+                                size_clean = size_str.strip()
                                 
-                                # Очищаем цену
-                                price_clean = price_str.replace(' ', '').replace(',', '')
+                                # Очищаем цену - убираем пробелы
+                                price_clean = price_str.replace(' ', '').replace(',', '').replace('\xa0', '')
                                 price_num = float(price_clean)
+                                
+                                # Цена уже в рублях, конвертируем в копейки
                                 price_cents = int(price_num * 100)
                                 
-                                # Проверяем разумность
-                                if 1000 <= price_cents <= 10000000 and len(size_clean) <= 10:
+                                # Проверяем разумность: размер должен быть от 30 до 50, цена от 1000 до 100000 рублей
+                                size_num = float(size_str.replace(',', '.'))
+                                if 30 <= size_num <= 50 and 1000 <= price_cents <= 10000000:
                                     # Проверяем, нет ли уже такого размера
                                     if not any(sp['size'] == size_clean for sp in html_sizes_prices):
                                         html_sizes_prices.append({
                                             'size': size_clean,
                                             'price': price_cents
                                         })
-                                        print(f"    ✅ Found size-price pair: {size_clean} -> {price_cents} копеек")
+                                        print(f"    ✅ Found size-price pair: {size_clean} -> {price_cents} копеек ({price_num} руб)")
                             except Exception as e:
+                                print(f"    ⚠️ Error parsing size-price pair '{size_str}' -> '{price_str}': {e}")
                                 pass
                     except Exception as e:
                         print(f"  Error in aggressive search: {e}")
