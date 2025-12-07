@@ -3,6 +3,170 @@ from bs4 import BeautifulSoup
 import base64
 from typing import Optional, Dict, Any
 import re
+import asyncio
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from fake_useragent import UserAgent
+import time
+
+def _create_selenium_driver():
+    """Создает и настраивает Selenium WebDriver"""
+    try:
+        ua = UserAgent(platforms='pc')
+        options = Options()
+        options.add_argument('--headless')  # Запускаем в фоновом режиме
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--blink-settings=imagesEnabled=false')  # Отключаем загрузку изображений для скорости
+        options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument(f'user-agent={ua.random}')
+        options.page_load_strategy = 'eager'  # Не ждем полной загрузки
+        
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(30)
+        return driver
+    except Exception as e:
+        print(f"Error creating Selenium driver: {e}")
+        return None
+
+def _parse_sizes_prices_with_selenium(url: str) -> list:
+    """Парсит размеры и цены используя Selenium (как в gitpars.py)"""
+    driver = None
+    try:
+        print(f"  🚀 Using Selenium to parse sizes and prices from {url}")
+        driver = _create_selenium_driver()
+        if not driver:
+            return []
+        
+        driver.get(url)
+        time.sleep(2)  # Ждем загрузки страницы
+        
+        # Пробуем закрыть модальное окно, если есть
+        try:
+            button = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
+            driver.execute_script("arguments[0].click();", button)
+            time.sleep(1)
+        except:
+            pass
+        
+        sizes_prices = []
+        
+        # Проверяем, есть ли вкладки размеров (как в gitpars.py)
+        try:
+            size_buttons = WebDriverWait(driver, 5).until(
+                EC.visibility_of_all_elements_located((By.CSS_SELECTOR, 'div.SkuPanel_tabItem__MuUkW')))
+            print(f"    Found {len(size_buttons)} size tab(s), parsing each tab...")
+            
+            # Парсим каждую вкладку
+            for tab_idx, tab_button in enumerate(size_buttons):
+                try:
+                    driver.execute_script("arguments[0].click();", tab_button)
+                    time.sleep(1)
+                    
+                    # Ищем размеры и цены в первой группе
+                    size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
+                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                    
+                    if size_elements and price_elements:
+                        for size_elem, price_elem in zip(size_elements, price_elements):
+                            size = size_elem.get_attribute('textContent').strip()
+                            price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
+                            
+                            try:
+                                price_num = float(price_text.replace(',', ''))
+                                # Если цена меньше 1000, возможно это в долларах, умножаем на 12.5
+                                if price_num < 1000:
+                                    price_num = price_num * 12.5
+                                price_cents = int(price_num * 100)
+                                
+                                sizes_prices.append({'size': size, 'price': price_cents})
+                                print(f"      ✅ Tab {tab_idx+1}: {size} -> {price_cents} копеек")
+                            except:
+                                pass
+                except Exception as e:
+                    print(f"      ⚠️ Error parsing tab {tab_idx+1}: {e}")
+                    continue
+        except:
+            # Если нет вкладок, пробуем стандартный подход
+            print(f"    No size tabs found, trying standard approach...")
+            try:
+                # Проверяем количество меню (как в gitpars.py)
+                check_count_menu = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_label__Vbp8t>span:nth-child(1)')
+                menu_count = len(check_count_menu)
+                print(f"    Found {menu_count} menu(s)")
+                
+                if menu_count == 1:
+                    # Одно меню: размеры и цены в nth-child(1)
+                    size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
+                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                    
+                    if size_elements and price_elements:
+                        for size_elem, price_elem in zip(size_elements, price_elements):
+                            size = size_elem.get_attribute('textContent').strip()
+                            price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
+                            
+                            try:
+                                price_num = float(price_text.replace(',', ''))
+                                if price_num < 1000:
+                                    price_num = price_num * 12.5
+                                price_cents = int(price_num * 100)
+                                
+                                sizes_prices.append({'size': size, 'price': price_cents})
+                                print(f"      ✅ {size} -> {price_cents} копеек")
+                            except:
+                                pass
+                elif menu_count == 2:
+                    # Два меню (цвет): размеры и цены в nth-child(2)
+                    color_buttons = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_list__OUqa1.SkuPanel_col4__UYcTN.SkuPanel_imgList__7Uem4>div')
+                    for color_button in color_buttons:
+                        try:
+                            driver.execute_script("arguments[0].click();", color_button)
+                            time.sleep(1)
+                            
+                            size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(2) div.SkuPanel_value__BAJ1p')
+                            price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(2) div.SkuPanel_price__KCs7G')
+                            
+                            if size_elements and price_elements:
+                                for size_elem, price_elem in zip(size_elements, price_elements):
+                                    size = size_elem.get_attribute('textContent').strip()
+                                    price_text = price_elem.get_attribute('textContent').strip().replace('₽', '').replace('P', '').replace('$', '').replace(' ', '').replace('\xa0', '')
+                                    
+                                    try:
+                                        price_num = float(price_text.replace(',', ''))
+                                        if price_num < 1000:
+                                            price_num = price_num * 12.5
+                                        price_cents = int(price_num * 100)
+                                        
+                                        sizes_prices.append({'size': size, 'price': price_cents})
+                                        print(f"      ✅ {size} -> {price_cents} копеек")
+                                    except:
+                                        pass
+                        except:
+                            continue
+            except Exception as e:
+                print(f"    ⚠️ Error in standard approach: {e}")
+        
+        print(f"  ✅ Selenium found {len(sizes_prices)} size-price pairs")
+        return sizes_prices
+        
+    except Exception as e:
+        print(f"  ❌ Error using Selenium: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
 
 async def download_image_to_base64(url: str, client: httpx.AsyncClient) -> Optional[str]:
     """Скачивает изображение и конвертирует в base64"""
@@ -167,10 +331,15 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         if images_data:
                             if isinstance(images_data, list):
                                 print(f"  📸 Found {len(images_data)} images in detailImageList, processing in order...")
-                                # Сортируем по полю 'sort' если оно есть, чтобы сохранить правильный порядок
-                                if all(isinstance(img, dict) and 'sort' in img for img in images_data):
-                                    images_data = sorted(images_data, key=lambda x: x.get('sort', 0))
-                                    print(f"  📸 Sorted images by 'sort' field")
+                                # Сортируем по полю 'sort' или 'genericTypeSort' если оно есть, чтобы сохранить правильный порядок
+                                if all(isinstance(img, dict) for img in images_data):
+                                    # Пробуем сортировать по 'sort', если нет - по 'genericTypeSort'
+                                    if all('sort' in img for img in images_data):
+                                        images_data = sorted(images_data, key=lambda x: x.get('sort', 0))
+                                        print(f"  📸 Sorted images by 'sort' field")
+                                    elif all('genericTypeSort' in img for img in images_data):
+                                        images_data = sorted(images_data, key=lambda x: x.get('genericTypeSort', 0))
+                                        print(f"  📸 Sorted images by 'genericTypeSort' field")
                                 # Берем все изображения в порядке из detailImageList (это правильный порядок с сайта)
                                 for idx, img in enumerate(images_data):
                                     if idx >= 10:  # Максимум 10 изображений
@@ -1475,6 +1644,22 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     need_html_prices = True
                     print(f"  ⚠️ All sizes have the same price ({list(unique_prices)[0]}), trying to find individual prices from HTML...")
             
+            # Используем Selenium для парсинга размеров и цен, если они все одинаковые
+            if need_html_prices:
+                selenium_sizes_prices = _parse_sizes_prices_with_selenium(url)
+                if selenium_sizes_prices:
+                    print(f"  ✅ Got {len(selenium_sizes_prices)} size-price pairs from Selenium")
+                    # Объединяем с существующими размерами
+                    if sizes_prices:
+                        selenium_price_map = {item['size']: item['price'] for item in selenium_sizes_prices}
+                        for item in sizes_prices:
+                            size_key = item['size']
+                            if size_key in selenium_price_map:
+                                item['price'] = selenium_price_map[size_key]
+                                print(f"    ✅ Updated price for size {size_key}: {item['price']} копеек")
+                    else:
+                        sizes_prices = selenium_sizes_prices
+            
             if not description or need_html_prices:
                 print("Searching for sizes and prices using SkuPanel selectors...")
                 
@@ -1678,6 +1863,44 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                 print(f"    ✅ Found size-price in JSON-LD: {size} -> {price}")
                         except:
                             pass
+                    
+                    # Сначала пробуем найти размеры и цены в data-атрибутах и структурированных данных
+                    # Ищем элементы с data-атрибутами, содержащими размеры и цены
+                    size_price_elements = soup.find_all(attrs={'data-size': True, 'data-price': True})
+                    if size_price_elements:
+                        print(f"    Found {len(size_price_elements)} elements with data-size and data-price")
+                        for elem in size_price_elements:
+                            size_val = elem.get('data-size', '').strip()
+                            price_val = elem.get('data-price', '').strip()
+                            if size_val and price_val:
+                                try:
+                                    price_num = float(price_val.replace(' ', '').replace(',', '').replace('₽', '').replace('P', ''))
+                                    price_cents = int(price_num * 100)
+                                    if 30 <= float(size_val.replace(',', '.')) <= 50 and 1000 <= price_cents <= 10000000:
+                                        html_sizes_prices.append({'size': size_val, 'price': price_cents})
+                                        print(f"    ✅ Found size-price in data-attributes: {size_val} -> {price_cents} копеек")
+                                except:
+                                    pass
+                    
+                    # Ищем в JavaScript переменных
+                    script_tags = soup.find_all('script')
+                    for script in script_tags:
+                        if script.string and ('size' in script.string.lower() or 'price' in script.string.lower()):
+                            # Пробуем найти размеры и цены в JavaScript
+                            js_pattern = re.compile(r'["\']?size["\']?\s*[:=]\s*["\']?(\d+[,.]?\d*)["\']?\s*[,;].*?["\']?price["\']?\s*[:=]\s*["\']?(\d+(?:\s?\d{3})*)["\']?', re.IGNORECASE)
+                            js_matches = js_pattern.findall(script.string)
+                            if js_matches:
+                                print(f"    Found {len(js_matches)} size-price pairs in JavaScript")
+                                for size_str, price_str in js_matches:
+                                    try:
+                                        size_num = float(size_str.replace(',', '.'))
+                                        price_num = float(price_str.replace(' ', '').replace(',', ''))
+                                        price_cents = int(price_num * 100)
+                                        if 30 <= size_num <= 50 and 1000 <= price_cents <= 10000000:
+                                            html_sizes_prices.append({'size': size_str, 'price': price_cents})
+                                            print(f"    ✅ Found size-price in JavaScript: {size_str} -> {price_cents} копеек")
+                                    except:
+                                        pass
                     
                     # Ищем все элементы, которые могут содержать размеры и цены
                     # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
