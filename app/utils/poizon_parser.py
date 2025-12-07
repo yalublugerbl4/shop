@@ -455,8 +455,22 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                 else:
                                                     price_val = min_price
                                                 if price_val:
-                                                    sku_price_mapping[sku_id_dto] = price_val
-                                                    print(f"          ✅ Mapped price from minPrice: skuId={sku_id_dto}, price={price_val}")
+                                                    # Сохраняем только числовое значение, не словарь
+                                                    if isinstance(price_val, dict):
+                                                        # Сохраняем оригинальный словарь для извлечения
+                                                        price_dict = price_val
+                                                        price_val = price_dict.get('minUnitVal')
+                                                        if price_val is None:
+                                                            amount = price_dict.get('amount')
+                                                            if amount:
+                                                                try:
+                                                                    amount_num = float(str(amount))
+                                                                    price_val = int(amount_num * 100) if amount_num < 1000 else int(amount_num)
+                                                                except:
+                                                                    price_val = None
+                                                    if price_val:
+                                                        sku_price_mapping[sku_id_dto] = price_val
+                                                        print(f"          ✅ Mapped price from minPrice: skuId={sku_id_dto}, price={price_val}")
                                             if auth_price and sku_id_dto and sku_id_dto not in sku_price_mapping:
                                                 if isinstance(auth_price, dict):
                                                     price_val = auth_price.get('minUnitVal') or auth_price.get('amount') or auth_price.get('money')
@@ -622,7 +636,29 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                             print(f"  DEBUG: SKU price mapping has {len(sku_price_mapping)} entries")
                             
                             # Дополнительный поиск: проверяем, есть ли в product_data другие структуры с ценами
-                            if len(sku_price_mapping) == 0 or len(set(sku_price_mapping.values())) == 1:
+                            # Проверяем, все ли цены одинаковые (сначала извлекаем числовые значения)
+                            unique_price_values = set()
+                            for price_val in sku_price_mapping.values():
+                                if isinstance(price_val, dict):
+                                    # Извлекаем minUnitVal или amount
+                                    num_val = price_val.get('minUnitVal')
+                                    if num_val is None:
+                                        amount = price_val.get('amount')
+                                        if amount:
+                                            try:
+                                                num_val = float(str(amount))
+                                                if num_val < 1000:
+                                                    num_val = int(num_val * 100)
+                                                else:
+                                                    num_val = int(num_val)
+                                            except:
+                                                pass
+                                    if num_val is not None:
+                                        unique_price_values.add(num_val)
+                                elif isinstance(price_val, (int, float)):
+                                    unique_price_values.add(price_val)
+                            
+                            if len(sku_price_mapping) == 0 or len(unique_price_values) <= 1:
                                 print(f"  ⚠️ All prices are the same or no prices found. Searching for individual prices...")
                                 # Ищем все возможные места с ценами
                                 for key, value in product_data.items():
