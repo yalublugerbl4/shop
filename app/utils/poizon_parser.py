@@ -142,16 +142,19 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                    product_data.get('goodsNameEn'))
                         
                             # Изображения (сохраняем как URL, потом скачаем)
-                            images_data = (product_data.get('detailImageList') or  # В логах видели это поле!
-                                         product_data.get('images') or 
-                                         product_data.get('imageList') or
-                                         product_data.get('imageUrls') or
-                                         product_data.get('spuImages') or
-                                         product_data.get('mainImages') or
-                                         product_data.get('detailImages') or
-                                         product_data.get('goodsImages') or
-                                         product_data.get('goodsImageList') or
-                                         product_data.get('sizeImageList'))
+                            # Приоритет: detailImageList (основные фото товара в правильном порядке)
+                            images_data = product_data.get('detailImageList')
+                            if not images_data:
+                                # Fallback на другие источники
+                                images_data = (product_data.get('images') or 
+                                             product_data.get('imageList') or
+                                             product_data.get('imageUrls') or
+                                             product_data.get('spuImages') or
+                                             product_data.get('mainImages') or
+                                             product_data.get('detailImages') or
+                                             product_data.get('goodsImages') or
+                                             product_data.get('goodsImageList'))
+                            # sizeImageList - это изображения размеров, не товара, пропускаем
                             
                             print(f"  DEBUG: images_data type: {type(images_data)}")
                             if isinstance(images_data, list):
@@ -1654,24 +1657,26 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     page_text = soup.get_text()
                     
                     # Улучшенный паттерн: ищем "38 (39) 3 993 Р" или "40 (41) 3 741 Р" или "39,5 (40,5) 8 094 Р"
-                    # Паттерн должен искать размер перед ценой, а не наоборот
-                    # Ищем размер (может быть с запятой), затем опционально (EU размер), затем пробел и цена
+                    # ВАЖНО: размер должен быть строго в диапазоне 30-50, чтобы не находить части цены
+                    # Ищем размер (30-50, может быть с запятой), затем опционально (EU размер), затем пробел и полная цена (минимум 4 цифры)
+                    # Паттерн: размер (30-50 или 30.5-49.5), затем скобки с EU размером (опционально), затем пробел и цена (4+ цифр с пробелами)
                     size_price_pattern = re.compile(
-                        r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)(?:[,.]5)?\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})+)\s*[₽РP]',
                         re.IGNORECASE | re.MULTILINE
                     )
                     
-                    # Также пробуем более простой паттерн для случаев без скобок
-                    size_price_pattern_simple = re.compile(
-                        r'(\d+[,.]?\d*)\s+(\d{1,3}(?:\s?\d{3})*)\s*[₽РP]',
+                    # Также пробуем паттерн для размеров с запятой: "38,5 (39,5) 6 329 Р"
+                    size_price_pattern_comma = re.compile(
+                        r'(?:^|[^\d])(3[0-9]|4[0-9]|50)[,.]5\s*(?:\([^)]+\))?\s+(\d{1,3}(?:\s?\d{3})+)\s*[₽РP]',
                         re.IGNORECASE | re.MULTILINE
                     )
                     
                     matches = size_price_pattern.findall(page_text)
-                    # Если не нашли, пробуем простой паттерн
-                    if not matches:
-                        matches = size_price_pattern_simple.findall(page_text)
-                    print(f"    Found {len(matches)} potential size-price pairs")
+                    matches_comma = size_price_pattern_comma.findall(page_text)
+                    # Объединяем результаты
+                    all_matches = matches + matches_comma
+                    print(f"    Found {len(all_matches)} potential size-price pairs (main: {len(matches)}, comma: {len(matches_comma)})")
+                    matches = all_matches
                     
                     for idx, (size_str, price_str) in enumerate(matches):
                         try:
