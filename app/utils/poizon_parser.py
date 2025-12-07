@@ -386,6 +386,23 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             print(f"  ⏭️ Skipping AI-generated image {idx+1}: {img_url[:80]}...")
                                             continue
                                         
+                                        # Пропускаем технические изображения, схемы, чертежи
+                                        skip_keywords = [
+                                            'wash_intro', 'wash', 'intro', 'info', 'instruction',
+                                            'technical', 'schematic', 'drawing', 'diagram',
+                                            'size', 'sizing', 'chart', 'guide'
+                                        ]
+                                        if any(keyword in img_url_lower for keyword in skip_keywords):
+                                            print(f"  ⏭️ Skipping technical/info image {idx+1}: {img_url[:80]}...")
+                                            continue
+                                        
+                                        # Пропускаем изображения с genericType содержащим WASH, INTRO, INFO
+                                        if isinstance(img, dict):
+                                            generic_type = str(img.get('genericType', '')).lower()
+                                            if any(keyword in generic_type for keyword in ['wash', 'intro', 'info', 'instruction']):
+                                                print(f"  ⏭️ Skipping image {idx+1} (genericType={img.get('genericType')}): {img_url[:80]}...")
+                                                continue
+                                        
                                         # Нормализуем URL
                                         if img_url.startswith('//'):
                                             img_url = 'https:' + img_url
@@ -1601,6 +1618,18 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                     # Пропускаем AI-изображения
                     if 'ai/generate' in img_url_lower or 'ai_generate' in img_url_lower:
                         ai_images.append(img_url)
+                        continue
+                    
+                    # Пропускаем технические изображения, схемы, чертежи
+                    skip_keywords = [
+                        'technical', 'schematic', 'drawing', 'diagram', 'blueprint',
+                        'wash_intro', 'wash', 'intro', 'info', 'instruction',
+                        'size', 'sizing', 'chart', 'guide',
+                        'icon', 'logo', 'badge', 'watermark',
+                        'placeholder', 'default', 'empty'
+                    ]
+                    if any(keyword in img_url_lower for keyword in skip_keywords):
+                        print(f"  ⏭️ Skipping technical/info image: {img_url[:80]}...")
                         continue
                     
                     # Пропускаем первое изображение (как просил пользователь)
