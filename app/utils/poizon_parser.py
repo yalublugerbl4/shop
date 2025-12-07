@@ -167,6 +167,10 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         if images_data:
                             if isinstance(images_data, list):
                                 print(f"  📸 Found {len(images_data)} images in detailImageList, processing in order...")
+                                # Сортируем по полю 'sort' если оно есть, чтобы сохранить правильный порядок
+                                if all(isinstance(img, dict) and 'sort' in img for img in images_data):
+                                    images_data = sorted(images_data, key=lambda x: x.get('sort', 0))
+                                    print(f"  📸 Sorted images by 'sort' field")
                                 # Берем все изображения в порядке из detailImageList (это правильный порядок с сайта)
                                 for idx, img in enumerate(images_data):
                                     if idx >= 10:  # Максимум 10 изображений
@@ -176,7 +180,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     if isinstance(img, str):
                                         img_url = img
                                     elif isinstance(img, dict):
-                                        # detailImageList может содержать объекты с url, originUrl, imageUrl и т.д.
+                                        # detailImageList содержит объекты с ключом 'url' (видно в логах: ['imageId', 'sort', 'genericType', 'genericTypeSort', 'url', 'imgType', 'burialImgType'])
+                                        # Сортируем по полю 'sort' если оно есть, чтобы сохранить правильный порядок
                                         img_url = (img.get('url') or 
                                                   img.get('src') or 
                                                   img.get('imageUrl') or 
@@ -1656,6 +1661,24 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 # Всегда запускаем, даже если уже есть результаты
                 print(f"  🔍 Aggressive search: Looking for size-price pairs in HTML...")
                 try:
+                    # Сначала пробуем найти размеры и цены в структурированных данных (JSON-LD)
+                    json_ld_scripts = soup.find_all('script', type='application/ld+json')
+                    for script in json_ld_scripts:
+                        try:
+                            import json
+                            json_data = json.loads(script.string)
+                            if isinstance(json_data, dict) and 'offers' in json_data:
+                                offers = json_data.get('offers', [])
+                                if isinstance(offers, list):
+                                    for offer in offers:
+                                        if isinstance(offer, dict):
+                                            size = offer.get('itemOffered', {}).get('name', '')
+                                            price = offer.get('price', '')
+                                            if size and price:
+                                                print(f"    ✅ Found size-price in JSON-LD: {size} -> {price}")
+                        except:
+                            pass
+                    
                     # Ищем все элементы, которые могут содержать размеры и цены
                     # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
                     page_text = soup.get_text()
