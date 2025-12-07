@@ -47,39 +47,41 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             return []
         
         driver.get(url)
-        time.sleep(5)  # Ждем загрузки страницы
+        time.sleep(8)  # Увеличиваем время ожидания загрузки страницы
         
         # Пробуем закрыть модальное окно, если есть
         try:
-            button = WebDriverWait(driver, 5).until(
+            button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.ant-modal-content>button')))
             driver.execute_script("arguments[0].click();", button)
-            time.sleep(1)
+            time.sleep(2)
         except:
             pass
         
-        # Прокручиваем страницу до блока с размерами
-        try:
-            size_section = driver.find_element(By.CSS_SELECTOR, '[class*="SkuPanel"], [class*="size"], [class*="Size"]')
-            driver.execute_script("arguments[0].scrollIntoView({ behavior: 'smooth', block: 'center' });", size_section)
-            time.sleep(2)
-        except:
-            # Если не нашли секцию, просто прокручиваем вниз
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        # Прокручиваем страницу несколько раз, чтобы загрузить весь контент
+        for scroll_idx in range(3):
+            driver.execute_script(f"window.scrollTo(0, document.body.scrollHeight * {0.3 + scroll_idx * 0.2});")
             time.sleep(2)
         
-        # Дополнительное ожидание для загрузки динамического контента
-        time.sleep(2)
+        # Прокручиваем до конца страницы
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(3)
+        
+        # Прокручиваем обратно вверх, чтобы найти блок с размерами
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.5);")
+        time.sleep(3)
         
         sizes_prices = []
         
-        # Ждем загрузки размеров и цен - используем более универсальные селекторы
+        # Ждем загрузки размеров и цен - используем visibility (как в gitpars.py)
         try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div.SkuPanel_value__BAJ1p, [class*="SkuPanel_value"]')))
+            WebDriverWait(driver, 15).until(
+                EC.visibility_of_any_elements_located((By.CSS_SELECTOR, 'div.SkuPanel_value__BAJ1p, [class*="SkuPanel_value"], [class*="SkuPanel"]')))
+            print(f"    ✅ Found SkuPanel elements, waiting a bit more...")
+            time.sleep(3)
         except:
-            print(f"    ⚠️ Size elements not found, waiting longer...")
-            time.sleep(2)
+            print(f"    ⚠️ Size elements not found, trying alternative approach...")
+            time.sleep(3)
         
         # Пробуем найти размеры и цены разными способами
         # Способ 1: Проверяем, есть ли вкладки размеров
@@ -273,28 +275,43 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
                 time.sleep(3)
                 
-                # Проверяем количество меню (как в gitpars.py) - пробуем разные селекторы
-                check_count_menu = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_label__Vbp8t>span:nth-child(1)')
-                if not check_count_menu:
-                    # Пробуем альтернативные селекторы
-                    check_count_menu = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_label"]')
-                if not check_count_menu:
-                    check_count_menu = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel"] [class*="label"]')
-                
-                menu_count = len(check_count_menu)
-                print(f"    Found {menu_count} menu(s)")
+                # Проверяем количество меню (как в gitpars.py) - используем WebDriverWait для видимости
+                try:
+                    check_count_menu = WebDriverWait(driver, 10).until(
+                        EC.visibility_of_all_elements_located((By.CSS_SELECTOR, 'div.SkuPanel_label__Vbp8t>span:nth-child(1)')))
+                    menu_count = len(check_count_menu)
+                    print(f"    ✅ Found {menu_count} menu(s) using WebDriverWait")
+                except:
+                    # Если не нашли с WebDriverWait, пробуем обычный поиск
+                    check_count_menu = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_label__Vbp8t>span:nth-child(1)')
+                    if not check_count_menu:
+                        check_count_menu = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_label"]')
+                    if not check_count_menu:
+                        check_count_menu = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel"] [class*="label"]')
+                    menu_count = len(check_count_menu)
+                    print(f"    Found {menu_count} menu(s) using fallback search")
                 
                 if menu_count == 1 or menu_count == 0:
                     # Одно меню или не нашли меню: размеры и цены в nth-child(1)
-                    # Пробуем разные селекторы
-                    size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
-                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
-                    
-                    # Если не нашли, пробуем более широкие селекторы
-                    if not size_elements:
-                        size_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_group"] [class*="SkuPanel_value"]')
-                    if not price_elements:
-                        price_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_group"] [class*="SkuPanel_price"]')
+                    # Используем WebDriverWait для ожидания видимости элементов (как в gitpars.py)
+                    try:
+                        size_elements = WebDriverWait(driver, 10).until(
+                            EC.visibility_of_all_elements_located((By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')))
+                        price_elements = WebDriverWait(driver, 10).until(
+                            EC.visibility_of_all_elements_located((By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')))
+                        print(f"    ✅ Found {len(size_elements)} size elements and {len(price_elements)} price elements using WebDriverWait")
+                    except:
+                        # Если не нашли с WebDriverWait, пробуем обычный поиск
+                        size_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_value__BAJ1p')
+                        price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_group__egmoX:nth-child(1) div.SkuPanel_price__KCs7G')
+                        
+                        # Если не нашли, пробуем более широкие селекторы
+                        if not size_elements:
+                            size_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_group"] [class*="SkuPanel_value"], [class*="SkuPanel_value"]')
+                        if not price_elements:
+                            price_elements = driver.find_elements(By.CSS_SELECTOR, '[class*="SkuPanel_group"] [class*="SkuPanel_price"], [class*="SkuPanel_price"]')
+                        
+                        print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
                     
                     # Если все еще не нашли, пробуем найти все элементы с размерами и ценами
                     if not size_elements or not price_elements:
@@ -324,27 +341,29 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
                             except:
                                 continue
                     
-                    print(f"    Found {len(size_elements)} size elements, {len(price_elements)} price elements")
-                    
                     if size_elements and price_elements:
                         for size_elem, price_elem in zip(size_elements, price_elements):
-                            size = size_elem.get_attribute('textContent').strip()
-                            if '(' in size:
-                                size = size.split('(')[0].strip()
-                            price_text = price_elem.get_attribute('textContent').strip()
-                            price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
-                            
-                            if price_text_clean and price_text_clean != '-':
-                                # Удаляем пробелы между цифрами
-                                price_text_clean = price_text_clean.replace(' ', '').replace(',', '')
+                            try:
+                                size = size_elem.get_attribute('textContent').strip()
+                                if '(' in size:
+                                    size = size.split('(')[0].strip()
+                                price_text = price_elem.get_attribute('textContent').strip()
+                                price_text_clean = price_text.replace('₽', '').replace('Р', '').replace('P', '').replace('$', '').replace('\xa0', ' ').strip()
                                 
-                                try:
-                                    price_num = float(price_text_clean)
-                                    price_cents = int(price_num * 100)
-                                    sizes_prices.append({'size': size, 'price': price_cents})
-                                    print(f"      ✅ {size} -> {price_cents} копеек ({price_num} ₽)")
-                                except Exception as e:
-                                    print(f"      ⚠️ Error parsing {size} -> {price_text} (cleaned: '{price_text_clean}'): {e}")
+                                if price_text_clean and price_text_clean != '-':
+                                    # Удаляем пробелы между цифрами (например, "8 072" -> "8072")
+                                    price_text_clean = price_text_clean.replace(' ', '').replace(',', '').replace('\xa0', '')
+                                    
+                                    try:
+                                        price_num = float(price_text_clean)
+                                        price_cents = int(price_num * 100)
+                                        sizes_prices.append({'size': size, 'price': price_cents})
+                                        print(f"      ✅ {size} -> {price_cents} копеек ({price_num} ₽)")
+                                    except Exception as e:
+                                        print(f"      ⚠️ Error parsing {size} -> {price_text} (cleaned: '{price_text_clean}'): {e}")
+                            except Exception as e:
+                                print(f"      ⚠️ Error processing size-price pair: {e}")
+                                continue
                 elif menu_count == 2:
                     # Два меню (цвет): размеры и цены в nth-child(2)
                     color_buttons = driver.find_elements(By.CSS_SELECTOR, 'div.SkuPanel_list__OUqa1.SkuPanel_col4__UYcTN.SkuPanel_imgList__7Uem4>div')
@@ -389,57 +408,106 @@ def _parse_sizes_prices_with_selenium(url: str) -> list:
             try:
                 # Используем JavaScript для поиска элементов на странице - более агрессивный подход
                 js_code = """
-                var result = {sizes: [], prices: [], pairs: []};
+                var result = {sizes: [], prices: [], pairs: [], debug: []};
                 
-                // Ищем все элементы, которые могут содержать размеры и цены
-                var allElements = document.querySelectorAll('[class*="SkuPanel"], [class*="size"], [class*="Size"], [class*="price"]');
+                // Дополнительная прокрутка для загрузки контента
+                window.scrollTo(0, document.body.scrollHeight * 0.6);
                 
-                // Пробуем найти контейнеры с размерами и ценами
-                var containers = document.querySelectorAll('[class*="SkuPanel_group"], [class*="SkuPanel_list"]');
-                
-                containers.forEach(function(container) {
-                    var sizeText = '';
-                    var priceText = '';
+                // Ждем немного для загрузки
+                setTimeout(function() {
+                    // Пробуем найти контейнеры с размерами и ценами
+                    var containers = document.querySelectorAll('[class*="SkuPanel_group"], [class*="SkuPanel_list"], div[class*="SkuPanel"]');
+                    result.debug.push('Found ' + containers.length + ' containers');
                     
-                    // Ищем размер
-                    var sizeEl = container.querySelector('[class*="value"], [class*="size"], [class*="Size"]');
-                    if (sizeEl) {
-                        sizeText = sizeEl.textContent.trim();
-                    }
-                    
-                    // Ищем цену
-                    var priceEl = container.querySelector('[class*="price"], [class*="Price"]');
-                    if (priceEl) {
-                        priceText = priceEl.textContent.trim();
-                    }
-                    
-                    // Если нашли и размер, и цену
-                    if (sizeText && priceText && /\\d+/.test(sizeText) && /\\d/.test(priceText)) {
-                        result.pairs.push({size: sizeText, price: priceText});
-                    }
-                });
-                
-                // Если не нашли пары, пробуем найти все размеры и цены отдельно
-                if (result.pairs.length === 0) {
-                    var sizeElements = document.querySelectorAll('[class*="SkuPanel_value"], [class*="value"]');
-                    sizeElements.forEach(function(el) {
-                        var text = el.textContent.trim();
-                        if (text && /\\d+/.test(text) && text.length < 20) {
-                            result.sizes.push(text);
+                    containers.forEach(function(container) {
+                        var sizeText = '';
+                        var priceText = '';
+                        
+                        // Ищем размер
+                        var sizeEl = container.querySelector('[class*="value"], [class*="size"], [class*="Size"], div[class*="SkuPanel_value"]');
+                        if (sizeEl) {
+                            sizeText = sizeEl.textContent.trim();
+                        }
+                        
+                        // Ищем цену
+                        var priceEl = container.querySelector('[class*="price"], [class*="Price"], div[class*="SkuPanel_price"]');
+                        if (priceEl) {
+                            priceText = priceEl.textContent.trim();
+                        }
+                        
+                        // Если нашли и размер, и цену
+                        if (sizeText && priceText && /\\d+/.test(sizeText) && /\\d/.test(priceText)) {
+                            result.pairs.push({size: sizeText, price: priceText});
                         }
                     });
                     
-                    var priceElements = document.querySelectorAll('[class*="SkuPanel_price"], [class*="price"]');
-                    priceElements.forEach(function(el) {
-                        var text = el.textContent.trim();
-                        if (text && (/\\d/.test(text) || text.includes('₽') || text.includes('Р'))) {
-                            result.prices.push(text);
-                        }
-                    });
-                }
+                    // Если не нашли пары, пробуем найти все размеры и цены отдельно
+                    if (result.pairs.length === 0) {
+                        var sizeElements = document.querySelectorAll('[class*="SkuPanel_value"], [class*="value"], div[class*="value"]');
+                        result.debug.push('Found ' + sizeElements.length + ' size elements');
+                        sizeElements.forEach(function(el) {
+                            var text = el.textContent.trim();
+                            if (text && /\\d+/.test(text) && text.length < 20) {
+                                result.sizes.push(text);
+                            }
+                        });
+                        
+                        var priceElements = document.querySelectorAll('[class*="SkuPanel_price"], [class*="price"], div[class*="price"]');
+                        result.debug.push('Found ' + priceElements.length + ' price elements');
+                        priceElements.forEach(function(el) {
+                            var text = el.textContent.trim();
+                            if (text && (/\\d/.test(text) || text.includes('₽') || text.includes('Р'))) {
+                                result.prices.push(text);
+                            }
+                        });
+                    }
+                }, 2000);
                 
                 return result;
                 """
+                # Ждем выполнения JavaScript с таймаутом
+                time.sleep(3)
+                result = driver.execute_async_script("""
+                var callback = arguments[arguments.length - 1];
+                setTimeout(function() {
+                    var result = {sizes: [], prices: [], pairs: [], html: []};
+                    
+                    // Прокручиваем страницу для загрузки контента
+                    window.scrollTo(0, document.body.scrollHeight * 0.5);
+                    
+                    // Пробуем найти все элементы с размерами и ценами
+                    var allElements = document.querySelectorAll('*');
+                    var sizePattern = /\\d+[,.]?\\d*\\s*\\(/;
+                    var pricePattern = /\\d{1,2}(?:\\s?\\d{3})+\\s*[₽Р]/;
+                    
+                    allElements.forEach(function(el) {
+                        var text = el.textContent || '';
+                        if (text.length > 0 && text.length < 100) {
+                            var sizeMatch = text.match(sizePattern);
+                            var priceMatch = text.match(pricePattern);
+                            if (sizeMatch && priceMatch) {
+                                result.pairs.push({size: sizeMatch[0].trim(), price: priceMatch[0].trim(), text: text.substring(0, 50)});
+                            }
+                        }
+                    });
+                    
+                    // Также пробуем найти через классы
+                    var containers = document.querySelectorAll('[class*="SkuPanel"], [class*="size"], [class*="Size"]');
+                    containers.forEach(function(container) {
+                        var sizeEl = container.querySelector('[class*="value"], [class*="size"]');
+                        var priceEl = container.querySelector('[class*="price"]');
+                        if (sizeEl && priceEl) {
+                            var sizeText = sizeEl.textContent.trim();
+                            var priceText = priceEl.textContent.trim();
+                            if (sizeText && priceText) {
+                                result.pairs.push({size: sizeText, price: priceText});
+                            }
+                        }
+                    });
+                    
+                    callback(result);
+                }, 3000);
+                """)
                 result = driver.execute_script(js_code)
                 
                 # Обрабатываем пары размер-цена
