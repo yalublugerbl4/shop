@@ -159,8 +159,23 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                         
                         if images_data:
                             if isinstance(images_data, list):
-                                # Пропускаем первое изображение (обычно это подошва/стопа)
-                                for idx, img in enumerate(images_data[1:11]):  # Пропускаем первый, берем следующие 10
+                                # Пропускаем первое изображение только если это явно подошва/стопа
+                                for idx, img in enumerate(images_data):
+                                    if idx == 0:
+                                        # Проверяем первое изображение - пропускаем только если это подошва
+                                        img_url_check = None
+                                        if isinstance(img, str):
+                                            img_url_check = img
+                                        elif isinstance(img, dict):
+                                            img_url_check = (img.get('url') or img.get('src') or img.get('imageUrl'))
+                                        if img_url_check:
+                                            img_url_lower = img_url_check.lower()
+                                            skip_keywords = ['sole', 'подошв', 'стоп', 'bottom', 'underside', 'outsole', 'midsole']
+                                            if any(keyword in img_url_lower for keyword in skip_keywords):
+                                                print(f"  ⏭️ Skipping first image from __NEXT_DATA__ (detected as sole): {img_url_check[:80]}...")
+                                                continue
+                                    if idx >= 10:  # Максимум 10 изображений
+                                        break
                                     img_url = None
                                     if isinstance(img, str):
                                         img_url = img
@@ -188,7 +203,7 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 # Если одно изображение, тоже пропускаем
                                 pass
                         
-                        print(f"Found {len(images)} image URLs from __NEXT_DATA__ (skipped first)")
+                        print(f"Found {len(images)} image URLs from __NEXT_DATA__")
                         
                         # SKU данные (размеры и цены) - более глубокий поиск
                         # Пробуем разные пути в структуре данных
@@ -1366,10 +1381,21 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             
             print(f"Total found {len(found_urls)} image URLs before downloading")
             
-            # Скачиваем и конвертируем изображения (пропускаем первое - обычно это подошва/стопа)
+            # Скачиваем и конвертируем изображения (пропускаем первое только если это явно подошва/стопа)
             if found_urls:
-                # Пропускаем первое изображение, берем следующие (максимум 10)
-                images_to_download = found_urls[1:11] if len(found_urls) > 1 else []
+                # Проверяем первое изображение - пропускаем только если это подошва
+                images_to_download = []
+                for idx, img_url in enumerate(found_urls):
+                    if idx == 0:
+                        # Проверяем URL на признаки подошвы/стопы
+                        img_url_lower = img_url.lower()
+                        skip_keywords = ['sole', 'подошв', 'стоп', 'bottom', 'underside', 'outsole', 'midsole']
+                        if any(keyword in img_url_lower for keyword in skip_keywords):
+                            print(f"  ⏭️ Skipping first image (detected as sole): {img_url[:80]}...")
+                            continue
+                    images_to_download.append(img_url)
+                    if len(images_to_download) >= 10:
+                        break
                 max_images = len(images_to_download)
                 
                 for idx, img_url in enumerate(images_to_download, 1):
@@ -1591,6 +1617,49 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                     pass
                     except Exception as e:
                         print(f"  Error in fallback parsing: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Агрессивный поиск: ищем размеры и цены в любых элементах с числами и ценами
+                if not html_sizes_prices:
+                    print(f"  🔍 Aggressive search: Looking for size-price pairs in HTML...")
+                    try:
+                        # Ищем все элементы, которые могут содержать размеры и цены
+                        # Паттерн: размер (число с запятой) и цена (число с пробелами и ₽)
+                        page_text = soup.get_text()
+                        
+                        # Ищем паттерны типа "39 (40) 10 201 ₽" или "39,5 10 093 ₽"
+                        size_price_pattern = re.compile(
+                            r'(\d+[,.]?\d*)\s*(?:\([^)]+\))?\s*(\d{1,3}(?:\s?\d{3})*)\s*[₽P]',
+                            re.IGNORECASE
+                        )
+                        
+                        matches = size_price_pattern.findall(page_text)
+                        print(f"    Found {len(matches)} potential size-price pairs")
+                        
+                        for size_str, price_str in matches:
+                            try:
+                                # Очищаем размер
+                                size_clean = size_str.replace(',', ',')
+                                
+                                # Очищаем цену
+                                price_clean = price_str.replace(' ', '').replace(',', '')
+                                price_num = float(price_clean)
+                                price_cents = int(price_num * 100)
+                                
+                                # Проверяем разумность
+                                if 1000 <= price_cents <= 10000000 and len(size_clean) <= 10:
+                                    # Проверяем, нет ли уже такого размера
+                                    if not any(sp['size'] == size_clean for sp in html_sizes_prices):
+                                        html_sizes_prices.append({
+                                            'size': size_clean,
+                                            'price': price_cents
+                                        })
+                                        print(f"    ✅ Found size-price pair: {size_clean} -> {price_cents} копеек")
+                            except Exception as e:
+                                pass
+                    except Exception as e:
+                        print(f"  Error in aggressive search: {e}")
                         import traceback
                         traceback.print_exc()
                 
