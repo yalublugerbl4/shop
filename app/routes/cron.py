@@ -136,7 +136,6 @@ class ParseCategoryRequest(BaseModel):
     season: Optional[str] = Field(None)
     max_products: Optional[int] = Field(200, ge=1, le=500, description="Максимальное количество товаров для парсинга")
     use_selenium: Optional[bool] = Field(False, description="Использовать Selenium для парсинга (медленно, но точнее)")
-    skip_size_guide: Optional[bool] = Field(True, description="Пропустить парсинг гайда размеров (ускоряет парсинг)")
     
     @validator('category_url')
     def validate_category_url(cls, v):
@@ -158,8 +157,7 @@ async def _parse_category_background(
     category: str,
     season: Optional[str],
     max_products: int,
-    use_selenium: bool,
-    skip_size_guide: bool
+    use_selenium: bool
 ):
     """Фоновая задача для парсинга категории"""
     results = {
@@ -204,7 +202,7 @@ async def _parse_category_background(
                     })
                     continue
                 
-                parsed = await parse_poizon_product(url, use_selenium=use_selenium, skip_size_guide=skip_size_guide)
+                parsed = await parse_poizon_product(url, use_selenium=use_selenium, skip_size_guide=True)
                 
                 if parsed:
                     product_data = {
@@ -277,8 +275,7 @@ async def parse_category_cron(
         request.category,
         request.season,
         request.max_products,
-        request.use_selenium,
-        request.skip_size_guide
+        request.use_selenium
     )
     
     # Сразу возвращаем ответ, чтобы n8n не ждал
@@ -287,7 +284,6 @@ async def parse_category_cron(
         "message": "Парсинг категории запущен в фоне",
         "category_url": request.category_url,
         "max_products": request.max_products,
-        "use_selenium": request.use_selenium,
-        "skip_size_guide": request.skip_size_guide
+        "use_selenium": request.use_selenium
     }
 
