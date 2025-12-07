@@ -758,31 +758,54 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             print(f"    ⚠️ Error clicking size guide button: {e}")
             return None
         
-        # Сначала ждем появления модального окна (любого)
+        # Сначала ждем появления модального окна (любого) - увеличиваем время ожидания
+        modal_appeared = False
         try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '.ant-modal, [class*="modal"], [role="dialog"]'))
-            )
-            print(f"    ✅ Modal window appeared")
-            time.sleep(2)  # Даем время на полную загрузку
-        except:
-            print(f"    ⚠️ Modal window not found, but continuing to search for table...")
+            # Пробуем разные селекторы для модального окна
+            modal_wait_selectors = [
+                (By.CSS_SELECTOR, '.ant-modal'),
+                (By.CSS_SELECTOR, '.ant-modal-content'),
+                (By.CSS_SELECTOR, '.ant-modal-body'),
+                (By.CSS_SELECTOR, '[class*="modal"]'),
+                (By.CSS_SELECTOR, '[role="dialog"]'),
+                (By.XPATH, '//div[contains(@class, "ant-modal")]'),
+                (By.XPATH, '//div[contains(@class, "modal")]'),
+            ]
+            
+            for by, selector in modal_wait_selectors:
+                try:
+                    WebDriverWait(driver, 8).until(
+                        EC.presence_of_element_located((by, selector))
+                    )
+                    print(f"    ✅ Modal window appeared (found via: {selector})")
+                    modal_appeared = True
+                    time.sleep(3)  # Даем время на полную загрузку контента
+                    break
+                except:
+                    continue
+            
+            if not modal_appeared:
+                print(f"    ⚠️ Modal window not found after waiting, but continuing to search for table...")
+                time.sleep(2)  # Даем еще немного времени
+        except Exception as e:
+            print(f"    ⚠️ Error waiting for modal: {e}")
+            time.sleep(2)
         
         # Ждем появления модального окна с таблицей (пробуем разные селекторы)
         modal_found = False
         modal_selectors = [
-            'table',
+            '.ant-modal table',
+            '.ant-modal-content table',
+            '.ant-modal-body table',
             '[class*="SizeGuide"] table',
             '[class*="size-guide"] table',
             '[class*="Table"]',
             'div[class*="table"]',
             '[class*="Modal"] table',
             '[class*="modal"] table',
-            'div.ant-modal table',
-            '.ant-modal-body table',
-            '.ant-modal-content table',
             '[class*="ant-modal"] table',
             '[role="dialog"] table',
+            'table',
         ]
         
         for selector in modal_selectors:
@@ -803,12 +826,21 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             try:
                 all_tables = driver.find_elements(By.CSS_SELECTOR, 'table')
                 if all_tables:
-                    print(f"    ℹ️ Found {len(all_tables)} table(s) on page, trying first one...")
-                    modal_found = True
+                    print(f"    ℹ️ Found {len(all_tables)} table(s) on page, checking for size guide content...")
+                    # Проверяем, есть ли в таблицах ключевые слова размеров
+                    for table in all_tables:
+                        table_text = table.get_attribute('textContent') or ''
+                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR']):
+                            print(f"    ✅ Found size guide table with keywords")
+                            modal_found = True
+                            break
+                    if not modal_found:
+                        print(f"    ℹ️ Using first table as fallback")
+                        modal_found = True
                 else:
                     # Пробуем найти таблицу внутри модального окна через XPath
                     try:
-                        tables_in_modal = driver.find_elements(By.XPATH, '//div[contains(@class, "modal")]//table | //div[contains(@class, "Modal")]//table')
+                        tables_in_modal = driver.find_elements(By.XPATH, '//div[contains(@class, "modal")]//table | //div[contains(@class, "Modal")]//table | //div[contains(@class, "ant-modal")]//table')
                         if tables_in_modal:
                             print(f"    ℹ️ Found {len(tables_in_modal)} table(s) in modal via XPath")
                             modal_found = True
@@ -816,20 +848,34 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                         pass
                     
                     if not modal_found:
-                        return None
-            except:
+                        # Последняя попытка - ищем любую таблицу через XPath
+                        try:
+                            all_tables_xpath = driver.find_elements(By.XPATH, '//table')
+                            if all_tables_xpath:
+                                print(f"    ℹ️ Found {len(all_tables_xpath)} table(s) via XPath, using first one")
+                                modal_found = True
+                        except:
+                            pass
+                        
+                        if not modal_found:
+                            return None
+            except Exception as e:
+                print(f"    ⚠️ Error searching for tables: {e}")
                 return None
         
         # Ищем таблицу с размерами (используем все найденные таблицы, если модальное окно не найдено)
         table_selectors = [
-            'table',
+            '.ant-modal table',
+            '.ant-modal-content table',
+            '.ant-modal-body table',
             '[class*="SizeGuide"] table',
             '[class*="size-guide"] table',
             '[class*="Table"]',
             'div[class*="table"]',
-            '.ant-modal table',
-            '.ant-modal-body table',
+            '[class*="Modal"] table',
+            '[class*="modal"] table',
             '[role="dialog"] table',
+            'table',
         ]
         
         table = None
@@ -840,7 +886,8 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                     # Если найдено несколько таблиц, берем ту, которая содержит заголовки размеров
                     for t in tables:
                         table_text = t.get_attribute('textContent') or ''
-                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские']):
+                        # Проверяем наличие ключевых слов размеров
+                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR', 'Соответствие']):
                             table = t
                             print(f"    ✅ Found size guide table via: {selector} (contains size keywords)")
                             break
@@ -851,6 +898,24 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                     break
             except:
                 continue
+        
+        # Если не нашли через CSS селекторы, пробуем XPath
+        if not table:
+            try:
+                # Ищем таблицу внутри модального окна
+                tables_xpath = driver.find_elements(By.XPATH, '//div[contains(@class, "ant-modal")]//table | //div[contains(@class, "modal")]//table | //table')
+                if tables_xpath:
+                    for t in tables_xpath:
+                        table_text = t.get_attribute('textContent') or ''
+                        if any(keyword in table_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR']):
+                            table = t
+                            print(f"    ✅ Found size guide table via XPath (contains size keywords)")
+                            break
+                    if not table:
+                        table = tables_xpath[0]
+                        print(f"    ✅ Found size guide table via XPath (using first table)")
+            except Exception as e:
+                print(f"    ⚠️ Error finding table via XPath: {e}")
         
         if not table:
             print(f"    ⚠️ Size guide table not found")
