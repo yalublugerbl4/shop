@@ -746,12 +746,27 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
         try:
             driver.execute_script("arguments[0].scrollIntoView({ block: 'center', behavior: 'auto' });", size_guide_button)
             time.sleep(1)
-            driver.execute_script("arguments[0].click();", size_guide_button)
+            # Пробуем обычный клик сначала
+            try:
+                size_guide_button.click()
+            except:
+                # Если не получилось, используем JavaScript
+                driver.execute_script("arguments[0].click();", size_guide_button)
             print(f"    ✅ Clicked size guide button")
-            time.sleep(3)  # Увеличиваем время ожидания после клика
+            time.sleep(5)  # Увеличиваем время ожидания после клика
         except Exception as e:
             print(f"    ⚠️ Error clicking size guide button: {e}")
             return None
+        
+        # Сначала ждем появления модального окна (любого)
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '.ant-modal, [class*="modal"], [role="dialog"]'))
+            )
+            print(f"    ✅ Modal window appeared")
+            time.sleep(2)  # Даем время на полную загрузку
+        except:
+            print(f"    ⚠️ Modal window not found, but continuing to search for table...")
         
         # Ждем появления модального окна с таблицей (пробуем разные селекторы)
         modal_found = False
@@ -765,6 +780,8 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
             '[class*="modal"] table',
             'div.ant-modal table',
             '.ant-modal-body table',
+            '.ant-modal-content table',
+            '[class*="ant-modal"] table',
             '[role="dialog"] table',
         ]
         
@@ -789,7 +806,17 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                     print(f"    ℹ️ Found {len(all_tables)} table(s) on page, trying first one...")
                     modal_found = True
                 else:
-                    return None
+                    # Пробуем найти таблицу внутри модального окна через XPath
+                    try:
+                        tables_in_modal = driver.find_elements(By.XPATH, '//div[contains(@class, "modal")]//table | //div[contains(@class, "Modal")]//table')
+                        if tables_in_modal:
+                            print(f"    ℹ️ Found {len(tables_in_modal)} table(s) in modal via XPath")
+                            modal_found = True
+                    except:
+                        pass
+                    
+                    if not modal_found:
+                        return None
             except:
                 return None
         
@@ -1709,16 +1736,34 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     print(f"    SKU {idx+1}: Found size via mapping {property_value_id} -> {size}")
                                                     break
                                 
-                                # Если не нашли через маппинг, пробуем извлечь из skuTitle (но только число размера)
+                                # Если не нашли через маппинг, пробуем извлечь из skuTitle (поддерживаем дроби ⅔, ⅓)
                                 if not size:
                                     sku_title = sku.get('skuTitle') or ''
-                                    # Ищем паттерн размера в конце названия (число с запятой/точкой)
+                                    # Ищем паттерн размера в конце названия (число с запятой/точкой или дробью)
                                     if sku_title:
-                                        # Ищем паттерн типа "43,5" или "43.5" в конце строки
-                                        size_match = re.search(r'(\d+[,.]?\d*)\s*$', sku_title.strip())
+                                        # Словарь для конвертации Unicode дробей в десятичные
+                                        fraction_map = {
+                                            '⅓': 0.333, '⅔': 0.667, '⅛': 0.125, '⅜': 0.375,
+                                            '⅝': 0.625, '⅞': 0.875, '¼': 0.25, '¾': 0.75, '½': 0.5
+                                        }
+                                        
+                                        # Паттерн для размеров с дробями: "34⅔", "35⅓", "34 ⅔", "34⅔ (35⅓)" и т.д.
+                                        # Также поддерживаем обычные форматы: "43,5", "43.5"
+                                        # Сначала ищем дробь (может быть перед скобкой или в конце)
+                                        size_match = re.search(r'(\d+)\s*([⅓⅔⅛⅜⅝⅞¼¾½])(?:\s*\(|$)', sku_title.strip())
                                         if size_match:
-                                            size = size_match.group(1).replace(',', ',')  # Оставляем запятую как есть
-                                            print(f"    SKU {idx+1}: Extracted size from skuTitle: '{size}'")
+                                            whole = int(size_match.group(1))
+                                            fraction_char = size_match.group(2)
+                                            fraction_decimal = fraction_map.get(fraction_char, 0)
+                                            size = f"{whole + fraction_decimal:.3f}".rstrip('0').rstrip('.')
+                                            size = size.replace('.', ',')  # Заменяем точку на запятую
+                                            print(f"    SKU {idx+1}: Extracted size with fraction from skuTitle: '{size}' (was: {whole}{fraction_char})")
+                                        else:
+                                            # Ищем паттерн типа "43,5" или "43.5" в конце строки
+                                            size_match = re.search(r'(\d+[,.]?\d*)\s*$', sku_title.strip())
+                                            if size_match:
+                                                size = size_match.group(1).replace('.', ',')  # Заменяем точку на запятую
+                                                print(f"    SKU {idx+1}: Extracted size from skuTitle: '{size}'")
                                 
                                 # Если не нашли размер в properties, пробуем другие поля
                                 if not size:
@@ -1733,11 +1778,27 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                 
                                 # Если размер все еще содержит название товара, извлекаем только числовую часть
                                 if size and len(size) > 10:
-                                    # Пробуем найти число в конце
-                                    size_match = re.search(r'(\d+[,.]?\d*)\s*$', size.strip())
+                                    # Словарь для конвертации Unicode дробей
+                                    fraction_map = {
+                                        '⅓': 0.333, '⅔': 0.667, '⅛': 0.125, '⅜': 0.375,
+                                        '⅝': 0.625, '⅞': 0.875, '¼': 0.25, '¾': 0.75, '½': 0.5
+                                    }
+                                    
+                                    # Пробуем найти размер с дробью
+                                    size_match = re.search(r'(\d+)\s*([⅓⅔⅛⅜⅝⅞¼¾½])(?:\s*\(|$)', size.strip())
                                     if size_match:
-                                        size = size_match.group(1).replace(',', ',')
-                                        print(f"    SKU {idx+1}: Cleaned size to: '{size}'")
+                                        whole = int(size_match.group(1))
+                                        fraction_char = size_match.group(2)
+                                        fraction_decimal = fraction_map.get(fraction_char, 0)
+                                        size = f"{whole + fraction_decimal:.3f}".rstrip('0').rstrip('.')
+                                        size = size.replace('.', ',')
+                                        print(f"    SKU {idx+1}: Cleaned size with fraction to: '{size}'")
+                                    else:
+                                        # Пробуем найти число в конце
+                                        size_match = re.search(r'(\d+[,.]?\d*)\s*$', size.strip())
+                                        if size_match:
+                                            size = size_match.group(1).replace('.', ',')
+                                            print(f"    SKU {idx+1}: Cleaned size to: '{size}'")
                                 
                                 # Ищем цену для этого SKU
                                 price_value = None
