@@ -1341,11 +1341,6 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                 if price_value:
                                                     break
                                 
-                                # Если не нашли индивидуальную цену, используем базовую цену (для всех размеров одинаковая)
-                                if not price_value and base_price_money is not None:
-                                    price_value = base_price_money
-                                    print(f"    SKU {idx+1}: Using base price {price_value} (no individual price found)")
-                                
                                 # Если не нашли напрямую, пробуем вложенные структуры
                                 if not price_value and isinstance(sku, dict):
                                     price_info = sku.get('priceInfo') or sku.get('price')
@@ -1355,7 +1350,8 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                      price_info.get('salePrice') or
                                                      price_info.get('currentPrice'))
                                 
-                                if size and price_value:
+                                # Сохраняем размер даже если нет цены (будет "-")
+                                if size:
                                     try:
                                         # Цена может быть в разных форматах
                                         price_cents = None
@@ -1398,23 +1394,45 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                             })
                                             print(f"  SKU {idx+1}: size={size}, price={price_cents} копеек")
                                         else:
-                                            print(f"  SKU {idx+1}: Invalid price value: {price_value} -> {price_cents}")
+                                            # Если цена не найдена или невалидна, сохраняем размер с "-"
+                                            sizes_prices.append({
+                                                'size': str(size),
+                                                'price': None  # Будет отображаться как "-"
+                                            })
+                                            print(f"  SKU {idx+1}: size={size}, price=None (no price available)")
                                     except Exception as e:
-                                        print(f"  Error parsing SKU {idx+1}: {e}")
-                                        import traceback
-                                        traceback.print_exc()
-                                        pass
+                                        # Если произошла ошибка при парсинге цены, все равно сохраняем размер
+                                        sizes_prices.append({
+                                            'size': str(size),
+                                            'price': None
+                                        })
+                                        print(f"  SKU {idx+1}: size={size}, price=None (error parsing price: {e})")
+                                elif size:
+                                    # Если размер есть, но цена не найдена, сохраняем с "-"
+                                    sizes_prices.append({
+                                        'size': str(size),
+                                        'price': None
+                                    })
+                                    print(f"  SKU {idx+1}: size={size}, price=None (no price found)")
                             
                             if sizes_prices:
                                 description_lines = ["Размеры и цены:"]
                                 for item in sizes_prices:
-                                    price_rub = item['price'] / 100
-                                    description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                                    if item['price'] is not None:
+                                        price_rub = item['price'] / 100
+                                        description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                                    else:
+                                        description_lines.append(f"{item['size']}: -")
                                 description = "\n".join(description_lines)
                                 
-                                # Минимальная цена
-                                min_price = min(item['price'] for item in sizes_prices)
-                                price = min_price
+                                # Минимальная цена (только из размеров с ценой)
+                                prices_with_values = [item['price'] for item in sizes_prices if item['price'] is not None]
+                                if prices_with_values:
+                                    min_price = min(prices_with_values)
+                                    price = min_price
+                                else:
+                                    # Если нет ни одной цены, используем базовую
+                                    price = base_price_money if base_price_money else None
                                 
                                 print(f"✅ Found {len(sizes_prices)} sizes from __NEXT_DATA__")
                             else:
@@ -1988,8 +2006,11 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                 
                 description_lines = ["Размеры и цены:"]
                 for item in sizes_prices:
-                    price_rub = item['price'] / 100
-                    description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                    if item['price'] is not None:
+                        price_rub = item['price'] / 100
+                        description_lines.append(f"{item['size']}: {price_rub:,.0f} ₽")
+                    else:
+                        description_lines.append(f"{item['size']}: -")
                 description = "\n".join(description_lines)
                 print(f"Created description with {len(sizes_prices)} sizes")
             else:
@@ -2012,10 +2033,14 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
             # Используем минимальную цену из размеров, если она найдена, иначе основную цену
             final_price = price
             if sizes_prices:
-                # Берем минимальную цену среди размеров
-                min_size_price = min(item['price'] for item in sizes_prices)
-                final_price = min_size_price
-                print(f"Using minimum size price: {final_price} копеек (from {len(sizes_prices)} sizes)")
+                # Берем минимальную цену среди размеров (только размеры с ценой)
+                prices_with_values = [item['price'] for item in sizes_prices if item['price'] is not None]
+                if prices_with_values:
+                    min_size_price = min(prices_with_values)
+                    final_price = min_size_price
+                    print(f"Using minimum size price: {final_price} копеек (from {len(prices_with_values)} sizes with prices, {len(sizes_prices)} total sizes)")
+                else:
+                    print(f"No prices found in sizes, using base price: {final_price} копеек")
             
             print(f"Successfully parsed product: {title[:50]}... (price: {final_price} копеек, images: {len(images)}, sizes: {len(sizes_prices)})")
             
