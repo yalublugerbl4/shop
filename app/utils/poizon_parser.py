@@ -899,19 +899,125 @@ def _parse_size_guide_with_selenium(driver) -> Optional[Dict[str, Any]]:
                 return None
         
         # Даем дополнительное время на загрузку контента внутри модального окна
-        time.sleep(3)
+        time.sleep(5)  # Увеличиваем время ожидания
         
         # Пробуем прокрутить модальное окно, чтобы загрузить контент
         try:
             if not is_link:
                 # Прокручиваем модальное окно
                 modal_elem = driver.find_element(By.CSS_SELECTOR, '.ant-modal, [class*="modal"]')
+                # Прокручиваем вниз
                 driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight / 2;", modal_elem)
-                time.sleep(1)
+                time.sleep(2)
+                # Прокручиваем вверх
                 driver.execute_script("arguments[0].scrollTop = 0;", modal_elem)
-                time.sleep(1)
-        except:
-            pass
+                time.sleep(2)
+                # Прокручиваем вниз снова
+                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", modal_elem)
+                time.sleep(2)
+        except Exception as e:
+            print(f"    ⚠️ Error scrolling modal: {e}")
+        
+        # Пробуем найти таблицу через JavaScript
+        try:
+            print(f"    ℹ️ Trying to find table via JavaScript...")
+            table_found_js = driver.execute_script("""
+                // Ищем все таблицы в модальном окне
+                var modal = document.querySelector('.ant-modal') || document.querySelector('[class*="modal"]');
+                if (!modal) return null;
+                
+                var tables = modal.querySelectorAll('table');
+                if (tables.length > 0) {
+                    // Ищем таблицу с ключевыми словами
+                    for (var i = 0; i < tables.length; i++) {
+                        var text = tables[i].textContent || '';
+                        if (text.includes('EU') || text.includes('RU') || text.includes('UK') || text.includes('US') || 
+                            text.includes('Женские') || text.includes('Мужские') || text.includes('JP') || text.includes('KR')) {
+                            return tables[i].outerHTML;
+                        }
+                    }
+                    // Если не нашли по ключевым словам, возвращаем первую таблицу
+                    return tables[0].outerHTML;
+                }
+                return null;
+            """)
+            if table_found_js:
+                print(f"    ✅ Found table via JavaScript!")
+                # Парсим HTML таблицы напрямую через BeautifulSoup
+                from bs4 import BeautifulSoup
+                js_soup = BeautifulSoup(table_found_js, 'html.parser')
+                table_elem = js_soup.find('table')
+                if table_elem:
+                    # Парсим таблицу напрямую из HTML
+                    try:
+                        headers = []
+                        rows_data = []
+                        
+                        # Получаем заголовки
+                        thead = table_elem.find('thead')
+                        if thead:
+                            header_cells = thead.find_all(['th', 'td'])
+                            for cell in header_cells:
+                                text = cell.get_text(strip=True)
+                                if text:
+                                    headers.append(text)
+                        
+                        # Если заголовков нет в thead, берем из первой строки
+                        if not headers:
+                            first_row = table_elem.find('tr')
+                            if first_row:
+                                header_cells = first_row.find_all(['th', 'td'])
+                                for cell in header_cells:
+                                    text = cell.get_text(strip=True)
+                                    if text:
+                                        headers.append(text)
+                        
+                        # Получаем строки данных
+                        tbody = table_elem.find('tbody')
+                        rows = tbody.find_all('tr') if tbody else table_elem.find_all('tr')[1:]  # Пропускаем первую строку, если она была заголовком
+                        
+                        for row in rows:
+                            cells = row.find_all(['td', 'th'])
+                            if len(cells) >= len(headers):
+                                row_data = {}
+                                for idx, cell in enumerate(cells[:len(headers)]):
+                                    cell_text = cell.get_text(strip=True)
+                                    if idx < len(headers):
+                                        header_key = headers[idx].replace(' ', '_').replace('Женские', 'US_Женские').replace('Мужские', 'US_Мужские')
+                                        row_data[header_key] = cell_text
+                                
+                                # Проверяем, что в строке есть размеры
+                                row_text = ' '.join([cell.get_text(strip=True) for cell in cells])
+                                if any(keyword in row_text for keyword in ['EU', 'RU', 'UK', 'US', 'JP', 'KR']) or re.search(r'\d+[,.]?\d*', row_text):
+                                    if row_data:
+                                        rows_data.append(row_data)
+                        
+                        if headers and rows_data:
+                            print(f"    ✅ Parsed {len(rows_data)} rows from JavaScript table")
+                            return {
+                                'headers': headers,
+                                'rows': rows_data
+                            }
+                    except Exception as e:
+                        print(f"    ⚠️ Error parsing JavaScript table HTML: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Если не получилось распарсить HTML, пробуем найти через Selenium
+                tables = driver.find_elements(By.XPATH, '//table')
+                for t in tables:
+                    try:
+                        t_text = t.get_attribute('textContent') or ''
+                        if any(keyword in t_text for keyword in ['EU', 'RU', 'UK', 'US', 'Женские', 'Мужские', 'JP', 'KR']):
+                            table = t
+                            print(f"    ✅ Matched table found via JavaScript + Selenium")
+                            break
+                    except:
+                        continue
+        except Exception as e:
+            print(f"    ⚠️ Error finding table via JavaScript: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Ищем таблицу с размерами (используем все найденные таблицы, если модальное окно не найдено)
         table_selectors = [
