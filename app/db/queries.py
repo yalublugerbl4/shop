@@ -79,6 +79,25 @@ def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+def get_product_by_source_url(source_url: str) -> Optional[Dict[str, Any]]:
+    """Получить товар по source_url"""
+    import json
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT * FROM products WHERE source_url = %s AND is_active = true',
+                (source_url,)
+            )
+            row = cur.fetchone()
+            if row:
+                result = dict(row)
+                # Парсим JSON обратно
+                if isinstance(result.get('images_base64'), str):
+                    result['images_base64'] = json.loads(result['images_base64'])
+                return result
+            return None
+
+
 def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
     """Создать товар"""
     import json

@@ -151,6 +151,15 @@ async def parse_poizon(
             detail={"error": {"code": "PARSE_ERROR", "message": error_message}}
         )
     
+    # Проверяем, существует ли уже товар с таким source_url
+    existing_product = queries.get_product_by_source_url(request.url)
+    if existing_product:
+        return {
+            "success": True,
+            "product": existing_product,
+            "message": "Product already exists, not creating duplicate"
+        }
+    
     # Создаем товар в БД
     product_data = {
         'category': request.category,
@@ -186,6 +195,17 @@ async def parse_poizon_batch(
     
     for url in request.urls:
         try:
+            # Проверяем, существует ли уже товар с таким source_url
+            existing_product = queries.get_product_by_source_url(url)
+            if existing_product:
+                results["success"].append({
+                    "url": url,
+                    "product_id": existing_product['id'],
+                    "title": existing_product['title'],
+                    "status": "already_exists"
+                })
+                continue
+            
             parsed = await parse_poizon_product(url)
             if parsed:
                 product_data = {
@@ -201,7 +221,8 @@ async def parse_poizon_batch(
                 results["success"].append({
                     "url": url,
                     "product_id": product['id'],
-                    "title": product['title']
+                    "title": product['title'],
+                    "status": "created"
                 })
             else:
                 results["failed"].append({
@@ -284,6 +305,19 @@ async def parse_category(
         for idx, url in enumerate(product_links, 1):
             try:
                 print(f"Parsing product {idx}/{len(product_links)}: {url[:80]}...")
+                
+                # Проверяем, существует ли уже товар с таким source_url
+                existing_product = queries.get_product_by_source_url(url)
+                if existing_product:
+                    print(f"  ⏭️ Product already exists, skipping: {url[:80]}...")
+                    results["success"].append({
+                        "url": url,
+                        "product_id": existing_product['id'],
+                        "title": existing_product['title'],
+                        "status": "already_exists"
+                    })
+                    continue
+                
                 parsed = await parse_poizon_product(url)
                 
                 if parsed:
@@ -301,7 +335,8 @@ async def parse_category(
                     results["success"].append({
                         "url": url,
                         "product_id": product['id'],
-                        "title": product['title']
+                        "title": product['title'],
+                        "status": "created"
                     })
                 else:
                     results["failed"].append({
