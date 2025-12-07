@@ -158,7 +158,8 @@ async def parse_poizon(
         'title': parsed_data['title'],
         'description': parsed_data.get('description', ''),
         'price_cents': parsed_data['price_cents'],
-        'images_base64': parsed_data.get('images_base64', [])
+        'images_base64': parsed_data.get('images_base64', []),
+        'source_url': request.url  # Сохраняем оригинальный URL
     }
     
     product = queries.create_product(product_data)
@@ -193,7 +194,8 @@ async def parse_poizon_batch(
                     'title': parsed['title'],
                     'description': parsed.get('description', ''),
                     'price_cents': parsed['price_cents'],
-                    'images_base64': parsed.get('images_base64', [])
+                    'images_base64': parsed.get('images_base64', []),
+                    'source_url': url  # Сохраняем оригинальный URL
                 }
                 product = queries.create_product(product_data)
                 results["success"].append({
@@ -291,7 +293,8 @@ async def parse_category(
                         'title': parsed['title'],
                         'description': parsed.get('description', ''),
                         'price_cents': parsed['price_cents'],
-                        'images_base64': parsed.get('images_base64', [])
+                        'images_base64': parsed.get('images_base64', []),
+                        'source_url': url  # Сохраняем оригинальный URL
                     }
                     
                     product = queries.create_product(product_data)

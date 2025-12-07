@@ -86,8 +86,8 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO products (category, season, title, description, price_cents, images_base64)
-                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s)
+                INSERT INTO products (category, season, title, description, price_cents, images_base64, source_url)
+                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s, %(source_url)s)
                 RETURNING *
                 """,
                 {
@@ -96,7 +96,8 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
                     'title': product_data['title'],
                     'description': product_data.get('description', ''),
                     'price_cents': product_data['price_cents'],
-                    'images_base64': json.dumps(product_data.get('images_base64', []))
+                    'images_base64': json.dumps(product_data.get('images_base64', [])),
+                    'source_url': product_data.get('source_url')
                 }
             )
             row = cur.fetchone()
@@ -166,3 +167,14 @@ def delete_product(product_id: str) -> bool:
                 (product_id,)
             )
             return cur.rowcount > 0
+
+
+def get_all_products_with_source_url() -> List[Dict[str, Any]]:
+    """Получить все товары с source_url для обновления"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT id, source_url, title, price_cents FROM products WHERE is_active = true AND source_url IS NOT NULL'
+            )
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]

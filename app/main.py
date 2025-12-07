@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import settings
-from app.routes import products, me, admin
+from app.routes import products, me, admin, cron
 
 app = FastAPI(title="Telegram Shop API")
 
@@ -39,6 +39,7 @@ async def health():
 app.include_router(me.router, prefix="/me", tags=["me"])
 app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(admin.router, prefix="/admin", tags=["admin"])
+app.include_router(cron.router, prefix="/cron", tags=["cron"])
 
 
 @app.exception_handler(Exception)
