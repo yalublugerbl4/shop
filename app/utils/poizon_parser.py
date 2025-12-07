@@ -955,23 +955,50 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     min_price_obj = price_info.get('minPrice')
                                                     price_val = None
                                                     
-                                                    if isinstance(min_price_obj, dict):
-                                                        # Извлекаем minUnitVal (уже в копейках)
-                                                        price_val = min_price_obj.get('minUnitVal')
-                                                        if not price_val:
-                                                            # Если нет minUnitVal, пробуем amount и конвертируем
-                                                            amount = min_price_obj.get('amount')
-                                                            if amount:
-                                                                try:
-                                                                    amount_num = float(str(amount))
-                                                                    if amount_num >= 1000:
-                                                                        price_val = int(amount_num)  # Уже в копейках
-                                                                    else:
-                                                                        price_val = int(amount_num * 100)  # В рублях
-                                                                except:
-                                                                    pass
-                                                    elif isinstance(min_price_obj, (int, float)):
-                                                        price_val = int(min_price_obj) if min_price_obj >= 1000 else int(min_price_obj * 100)
+                                                    # Детальное логирование для отладки
+                                                    if min_price_obj is not None:
+                                                        print(f"            minPrice type: {type(min_price_obj)}, value: {str(min_price_obj)[:200]}")
+                                                    else:
+                                                        print(f"            ⚠️ minPrice is None for propertyValueId={prop_value_id}")
+                                                    
+                                                    if min_price_obj is not None:
+                                                        if isinstance(min_price_obj, dict):
+                                                            # Извлекаем minUnitVal из minPrice.money.minUnitVal (уже в копейках)
+                                                            money_obj = min_price_obj.get('money', {})
+                                                            if isinstance(money_obj, dict):
+                                                                price_val = money_obj.get('minUnitVal')
+                                                                if not price_val:
+                                                                    # Если нет minUnitVal, пробуем amount и конвертируем
+                                                                    amount = money_obj.get('amount')
+                                                                    if amount:
+                                                                        try:
+                                                                            amount_num = float(str(amount))
+                                                                            if amount_num >= 1000:
+                                                                                price_val = int(amount_num)  # Уже в копейках
+                                                                            else:
+                                                                                price_val = int(amount_num * 100)  # В рублях
+                                                                        except:
+                                                                            pass
+                                                            
+                                                            # Если не нашли в money, пробуем напрямую из minPrice
+                                                            if not price_val:
+                                                                price_val = min_price_obj.get('minUnitVal')
+                                                                if not price_val:
+                                                                    amount = min_price_obj.get('amount')
+                                                                    if amount:
+                                                                        try:
+                                                                            amount_num = float(str(amount))
+                                                                            if amount_num >= 1000:
+                                                                                price_val = int(amount_num)
+                                                                            else:
+                                                                                price_val = int(amount_num * 100)
+                                                                        except:
+                                                                            pass
+                                                        elif isinstance(min_price_obj, (int, float)):
+                                                            price_val = int(min_price_obj) if min_price_obj >= 1000 else int(min_price_obj * 100)
+                                                    else:
+                                                        # minPrice отсутствует - выводим предупреждение
+                                                        print(f"            ⚠️ No minPrice for propertyValueId={prop_value_id}, checking authPrice...")
                                                     
                                                     # Если не нашли, пробуем authPrice
                                                     if not price_val:
@@ -989,12 +1016,16 @@ async def parse_poizon_product(url: str) -> Optional[Dict[str, Any]]:
                                                     if price_val:
                                                         # Сохраняем маппинг propertyValueId -> price
                                                         prop_value_price_mapping[str(prop_value_id)] = price_val
-                                                        print(f"          ✅ Found price in levelOneMinPriceSkus: propertyValueId={prop_value_id}, price={price_val}")
+                                                        print(f"          ✅ Found price in levelOneMinPriceSkus: propertyValueId={prop_value_id}, price={price_val} копеек ({price_val/100} ₽)")
                                                         
-                                                        # Если есть skuId, сразу связываем
+                                                        # Если есть skuId, сразу связываем (это самый надежный способ!)
                                                         if sku_id_from_price_info:
                                                             sku_price_mapping[sku_id_from_price_info] = price_val
-                                                            print(f"          ✅ Mapped price via skuId: propertyValueId={prop_value_id} -> skuId={sku_id_from_price_info}, price={price_val}")
+                                                            print(f"          ✅ Mapped price directly via skuId: propertyValueId={prop_value_id} -> skuId={sku_id_from_price_info}, price={price_val} копеек")
+                                                    else:
+                                                        # Если не нашли цену, но есть skuId, пробуем найти цену через другие пути
+                                                        if sku_id_from_price_info:
+                                                            print(f"            ⚠️ No price found but skuId exists: {sku_id_from_price_info}, will try to find price later")
                                                 elif isinstance(price_info, (int, float, str)):
                                                     # Возможно, прямое значение цены
                                                     try:
