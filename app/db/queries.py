@@ -42,14 +42,26 @@ def get_products(
     q: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Получить список товаров с фильтрацией"""
+    # Импортируем категории для проверки основной категории
+    from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
+    
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             query = 'SELECT * FROM products WHERE is_active = true'
             params = []
             
             if category:
-                query += ' AND category = %s'
-                params.append(category)
+                # Проверяем, является ли category основной категорией
+                if category in MAIN_CATEGORIES_WITH_SUBCATEGORIES:
+                    # Если это основная категория, фильтруем по всем её подкатегориям
+                    subcategories = MAIN_CATEGORIES_WITH_SUBCATEGORIES[category]
+                    placeholders = ','.join(['%s'] * len(subcategories))
+                    query += f' AND category IN ({placeholders})'
+                    params.extend(subcategories)
+                else:
+                    # Если это подкатегория, фильтруем точно по ней
+                    query += ' AND category = %s'
+                    params.append(category)
             
             if season:
                 query += ' AND season = %s'
