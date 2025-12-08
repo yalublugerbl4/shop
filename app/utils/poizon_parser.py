@@ -2758,6 +2758,30 @@ async def parse_poizon_product(url: str, use_selenium: bool = True, skip_size_gu
                     img_tags = soup.select(selector)
                     print(f"  Trying selector '{selector}': found {len(img_tags)} elements")
                     for img in img_tags:
+                        skip_image = False
+                        skip_parent_keywords = ['outfit', 'naryad', 'наряд', 'lifestyle', 'style', 'look', 'wearing', 'worn']
+                        
+                        parent = img.find_parent()
+                        if parent:
+                            parent_classes = ' '.join(parent.get('class', [])).lower()
+                            parent_id = (parent.get('id') or '').lower()
+                            
+                            if any(keyword in parent_classes or keyword in parent_id for keyword in skip_parent_keywords):
+                                skip_image = True
+                            
+                            if not skip_image:
+                                ancestors = parent.find_parents()
+                                for ancestor in ancestors[:5]:
+                                    ancestor_classes = ' '.join(ancestor.get('class', [])).lower()
+                                    ancestor_id = (ancestor.get('id') or '').lower()
+                                    if any(keyword in ancestor_classes or keyword in ancestor_id for keyword in skip_parent_keywords):
+                                        skip_image = True
+                                        break
+                        
+                        if skip_image:
+                            print(f"    ⏭️ Skipping image from outfit/lifestyle section: {img.get('src', '')[:80]}...")
+                            continue
+                        
                         # Ищем оригинальные изображения (не миниатюры)
                         img_url = None
                         
