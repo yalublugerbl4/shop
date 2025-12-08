@@ -5,7 +5,8 @@ import asyncio
 from app.middleware.telegram_auth import get_current_user, require_admin
 from app.db import queries
 from app.utils.poizon_parser import parse_poizon_product
-from app.utils.poizon_category_parser import extract_product_links_from_category
+from app.utils.poizon_category_parser import extract_product_links_from_category, extract_category_name_from_page
+from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
 
 router = APIRouter()
 
@@ -282,6 +283,25 @@ async def parse_category(
     }
     
     try:
+        category_to_use = request.category
+        
+        extracted_category = await extract_category_name_from_page(request.category_url)
+        if extracted_category:
+            print(f"Extracted category from page: {extracted_category}")
+            
+            if extracted_category in MAIN_CATEGORIES_WITH_SUBCATEGORIES.keys():
+                if request.category == extracted_category:
+                    category_to_use = extracted_category
+            else:
+                for main_cat, subcats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.items():
+                    if extracted_category in subcats:
+                        if request.category == main_cat:
+                            category_to_use = extracted_category
+                            print(f"Using extracted subcategory: {extracted_category}")
+                        break
+        
+        print(f"Using category: {category_to_use}")
+        
         # Шаг 1: Собираем все ссылки на товары из категории
         print(f"Extracting product links from category: {request.category_url}")
         product_links = await extract_product_links_from_category(request.category_url)
@@ -322,13 +342,13 @@ async def parse_category(
                 
                 if parsed:
                     product_data = {
-                        'category': request.category,
+                        'category': category_to_use,
                         'season': request.season,
                         'title': parsed['title'],
                         'description': parsed.get('description', ''),
                         'price_cents': parsed['price_cents'],
                         'images_base64': parsed.get('images_base64', []),
-                        'source_url': url  # Сохраняем оригинальный URL
+                        'source_url': url
                     }
                     
                     product = queries.create_product(product_data)

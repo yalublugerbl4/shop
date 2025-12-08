@@ -1,9 +1,10 @@
 import httpx
 from bs4 import BeautifulSoup
-from typing import List, Set
+from typing import List, Set, Optional
 import re
 import asyncio
 import json
+from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
 
 async def extract_product_links_from_category(category_url: str) -> List[str]:
     """
@@ -151,4 +152,75 @@ async def extract_product_links_from_category(category_url: str) -> List[str]:
                 continue
     
     return list(product_links)
+
+async def extract_category_name_from_page(category_url: str) -> Optional[str]:
+    """
+    Извлекает название категории/подкатегории из страницы категории
+    Возвращает название, если оно соответствует одной из наших категорий/подкатегорий
+    """
+    base_domain = 'https://thepoizon.ru'
+    if 'thepoizon.ru' not in category_url:
+        base_domain = 'https://www.poizon.com'
+    
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
+            'Referer': f'{base_domain}/',
+        }
+        
+        try:
+            response = await client.get(category_url, headers=headers)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            category_name = None
+            
+            next_data_script = soup.find('script', id='__NEXT_DATA__')
+            if next_data_script:
+                try:
+                    next_data = json.loads(next_data_script.string)
+                    props = next_data.get('props', {})
+                    page_props = props.get('pageProps', {})
+                    
+                    category_name = (page_props.get('categoryName') or 
+                                   page_props.get('category') or
+                                   page_props.get('title'))
+                    
+                    if isinstance(category_name, dict):
+                        category_name = category_name.get('name') or category_name.get('title')
+                except:
+                    pass
+            
+            if not category_name:
+                breadcrumb = soup.select_one('div.BreadCrumb_breadcrumb__Iy_yk')
+                if breadcrumb:
+                    links = breadcrumb.select('a span')
+                    if len(links) >= 3:
+                        category_name = links[2].get_text(strip=True)
+            
+            if not category_name:
+                title_tag = soup.select_one('h1, div[class*="title"], div[class*="Title"]')
+                if title_tag:
+                    category_name = title_tag.get_text(strip=True)
+            
+            if category_name:
+                category_name = category_name.strip()
+                
+                all_categories = set(MAIN_CATEGORIES_WITH_SUBCATEGORIES.keys())
+                for subcats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.values():
+                    all_categories.update(subcats)
+                
+                for cat in all_categories:
+                    if cat.lower() in category_name.lower() or category_name.lower() in cat.lower():
+                        return cat
+                
+                return category_name
+            
+        except Exception as e:
+            print(f"Error extracting category name: {e}")
+    
+    return None
 

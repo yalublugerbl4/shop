@@ -5,7 +5,8 @@ import asyncio
 import os
 from app.db import queries
 from app.utils.poizon_parser import parse_poizon_product
-from app.utils.poizon_category_parser import extract_product_links_from_category
+from app.utils.poizon_category_parser import extract_product_links_from_category, extract_category_name_from_page
+from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
 
 router = APIRouter()
 
@@ -168,6 +169,25 @@ async def _parse_category_background(
     }
     
     try:
+        category_to_use = category
+        
+        extracted_category = await extract_category_name_from_page(category_url)
+        if extracted_category:
+            print(f"Extracted category from page: {extracted_category}")
+            
+            if extracted_category in MAIN_CATEGORIES_WITH_SUBCATEGORIES.keys():
+                if category == extracted_category:
+                    category_to_use = extracted_category
+            else:
+                for main_cat, subcats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.items():
+                    if extracted_category in subcats:
+                        if category == main_cat:
+                            category_to_use = extracted_category
+                            print(f"Using extracted subcategory: {extracted_category}")
+                        break
+        
+        print(f"Using category: {category_to_use}")
+        
         # Шаг 1: Собираем все ссылки на товары из категории
         print(f"Extracting product links from category: {category_url}")
         product_links = await extract_product_links_from_category(category_url)
@@ -206,7 +226,7 @@ async def _parse_category_background(
                 
                 if parsed:
                     product_data = {
-                        'category': category,
+                        'category': category_to_use,
                         'season': season,
                         'title': parsed['title'],
                         'description': parsed.get('description', ''),
