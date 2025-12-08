@@ -1459,11 +1459,13 @@ async def parse_poizon_product(url: str, use_selenium: bool = True, skip_size_gu
                                             print(f"  ⏭️ Skipping AI-generated image {idx+1}: {img_url[:80]}...")
                                             continue
                                         
-                                        # Пропускаем только изображения с genericType=WASH_INTRO_INFO (инструкция по стирке)
                                         if isinstance(img, dict):
                                             generic_type = str(img.get('genericType', '')).upper()
                                             if generic_type == 'WASH_INTRO_INFO_ALL' or 'WASH_INTRO_INFO' in generic_type:
                                                 print(f"  ⏭️ Skipping wash instruction image {idx+1} (genericType={img.get('genericType')}): {img_url[:80]}...")
+                                                continue
+                                            if generic_type == 'DETAIL_ALL' or 'DETAIL' in generic_type:
+                                                print(f"  ⏭️ Skipping detail section image {idx+1} (genericType={img.get('genericType')}): {img_url[:80]}...")
                                                 continue
                                         
                                         # Нормализуем URL

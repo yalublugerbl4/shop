@@ -162,6 +162,25 @@ async def extract_category_name_from_page(category_url: str) -> Optional[str]:
     if 'thepoizon.ru' not in category_url:
         base_domain = 'https://www.poizon.com'
     
+    category_mapping = {
+        'sneakers': 'Кроссовки',
+        'basketball': 'Баскетбол',
+        'running': 'Бег',
+        'skateboarding': 'Скейтбординг',
+        'training': 'Тренировки',
+        'boots': 'Ботинки',
+        'shoes': 'Обувь',
+        'clothing': 'Одежда',
+        'bags': 'Сумки',
+        'accessories': 'Аксессуары'
+    }
+    
+    url_lower = category_url.lower()
+    for eng_name, rus_name in category_mapping.items():
+        if eng_name in url_lower:
+            if rus_name in MAIN_CATEGORIES_WITH_SUBCATEGORIES:
+                return rus_name
+    
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -191,8 +210,28 @@ async def extract_category_name_from_page(category_url: str) -> Optional[str]:
                     
                     if isinstance(category_name, dict):
                         category_name = category_name.get('name') or category_name.get('title')
-                except:
-                    pass
+                    
+                    if not category_name:
+                        category_info = page_props.get('categoryInfo') or page_props.get('categoryData')
+                        if isinstance(category_info, dict):
+                            category_name = category_info.get('name') or category_info.get('title')
+                except Exception as e:
+                    print(f"Error parsing __NEXT_DATA__ for category: {e}")
+            
+            if not category_name:
+                nav_items = soup.select('nav a, div[class*="nav"] a, div[class*="Nav"] a')
+                for nav_item in nav_items:
+                    text = nav_item.get_text(strip=True)
+                    if text:
+                        all_categories = set(MAIN_CATEGORIES_WITH_SUBCATEGORIES.keys())
+                        for subcats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.values():
+                            all_categories.update(subcats)
+                        for cat in all_categories:
+                            if cat.lower() == text.lower() or text.lower() in cat.lower():
+                                category_name = cat
+                                break
+                    if category_name:
+                        break
             
             if not category_name:
                 breadcrumb = soup.select_one('div.BreadCrumb_breadcrumb__Iy_yk')
@@ -214,10 +253,8 @@ async def extract_category_name_from_page(category_url: str) -> Optional[str]:
                     all_categories.update(subcats)
                 
                 for cat in all_categories:
-                    if cat.lower() in category_name.lower() or category_name.lower() in cat.lower():
+                    if cat.lower() == category_name.lower() or category_name.lower() in cat.lower() or cat.lower() in category_name.lower():
                         return cat
-                
-                return category_name
             
         except Exception as e:
             print(f"Error extracting category name: {e}")
