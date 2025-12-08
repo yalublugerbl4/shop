@@ -98,11 +98,17 @@ def get_products(
             results = []
             for row in rows:
                 result = dict(row)
-                if isinstance(result.get('images_base64'), str):
-                    try:
-                        result['images_base64'] = json.loads(result['images_base64'])
-                    except:
+                images = result.get('images_base64')
+                if images:
+                    if isinstance(images, str):
+                        try:
+                            result['images_base64'] = json.loads(images)
+                        except (json.JSONDecodeError, TypeError):
+                            result['images_base64'] = []
+                    elif not isinstance(images, list):
                         result['images_base64'] = []
+                else:
+                    result['images_base64'] = []
                 results.append(result)
             return results
 
