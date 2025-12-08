@@ -40,7 +40,8 @@ def get_products(
     category: Optional[str] = None,
     season: Optional[str] = None,
     q: Optional[str] = None,
-    size: Optional[str] = None
+    size: Optional[str] = None,
+    brand: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
     
@@ -73,6 +74,11 @@ def get_products(
                 size_pattern = f'%{size}:%'
                 query += ' AND description ILIKE %s'
                 params.append(size_pattern)
+            
+            if brand:
+                brand_pattern = f'%{brand}%'
+                query += ' AND title ILIKE %s'
+                params.append(brand_pattern)
             
             query += ' ORDER BY created_at DESC'
             
