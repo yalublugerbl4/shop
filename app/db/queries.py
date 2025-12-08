@@ -41,7 +41,9 @@ def get_products(
     season: Optional[str] = None,
     q: Optional[str] = None,
     size: Optional[str] = None,
-    brand: Optional[str] = None
+    brand: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
     
@@ -81,6 +83,14 @@ def get_products(
                 params.append(brand_pattern)
             
             query += ' ORDER BY created_at DESC'
+            
+            if limit is not None:
+                query += ' LIMIT %s'
+                params.append(limit)
+            
+            if offset is not None:
+                query += ' OFFSET %s'
+                params.append(offset)
             
             cur.execute(query, params)
             rows = cur.fetchall()

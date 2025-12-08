@@ -13,10 +13,12 @@ async def get_products(
     q: Optional[str] = Query(None),
     size: Optional[str] = Query(None),
     brand: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+    offset: Optional[int] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
     """Получить список товаров"""
-    products = queries.get_products(category=category, season=season, q=q, size=size, brand=brand)
+    products = queries.get_products(category=category, season=season, q=q, size=size, brand=brand, limit=limit, offset=offset)
     return products
 
 
