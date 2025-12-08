@@ -3078,18 +3078,36 @@ async def parse_poizon_product(url: str, use_selenium: bool = True, skip_size_gu
             
             print(f"Successfully parsed product: {title[:50]}... (price: {final_price} копеек, images: {len(images)}, sizes: {len(sizes_prices)})")
             
-            # Логируем финальное описание для отладки
-            if description:
-                print(f"Description will be saved (first 200 chars): {description[:200]}")
-            else:
-                print("WARNING: Description is empty - no sizes and prices found!")
+            extracted_category = None
+            breadcrumb = soup.select_one('div.BreadCrumb_breadcrumb__Iy_yk')
+            if breadcrumb:
+                links = breadcrumb.select('a span')
+                if len(links) >= 3:
+                    breadcrumb_category = links[2].get_text(strip=True)
+                    from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
+                    all_categories = set(MAIN_CATEGORIES_WITH_SUBCATEGORIES.keys())
+                    for subcats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.values():
+                        all_categories.update(subcats)
+                    for cat in all_categories:
+                        if cat.lower() == breadcrumb_category.lower() or breadcrumb_category.lower() in cat.lower() or cat.lower() in breadcrumb_category.lower():
+                            extracted_category = cat
+                            break
             
             result = {
                 'title': title[:500],
                 'price_cents': final_price,
                 'description': description[:2000] if description else '',
-                'images_base64': images
+                'images_base64': images,
+                'extracted_category': extracted_category
             }
+            
+            if description:
+                print(f"Description will be saved (first 200 chars): {description[:200]}")
+            else:
+                print("WARNING: Description is empty - no sizes and prices found!")
+            
+            if extracted_category:
+                print(f"Extracted category from breadcrumb: {extracted_category}")
             
             return result
             

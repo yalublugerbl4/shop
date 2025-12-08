@@ -341,8 +341,15 @@ async def parse_category(
                 parsed = await parse_poizon_product(url)
                 
                 if parsed:
+                    final_category = category_to_use
+                    if parsed.get('extracted_category'):
+                        extracted = parsed['extracted_category']
+                        if extracted in MAIN_CATEGORIES_WITH_SUBCATEGORIES.get(category_to_use, []):
+                            final_category = extracted
+                            print(f"Using extracted subcategory from product: {extracted}")
+                    
                     product_data = {
-                        'category': category_to_use,
+                        'category': final_category,
                         'season': request.season,
                         'title': parsed['title'],
                         'description': parsed.get('description', ''),
