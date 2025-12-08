@@ -32,7 +32,7 @@ class UpdateProductRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1)
     description: Optional[str] = None
     price_cents: Optional[int] = Field(None, gt=0)
-    images_base64: Optional[List[str]] = Field(None, max_items=3)
+    images_base64: Optional[List[str]] = Field(None)
     
     @validator('season')
     def validate_season(cls, v):
