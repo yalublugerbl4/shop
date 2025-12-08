@@ -39,7 +39,8 @@ def get_user_by_tgid(tgid: int) -> Optional[Dict[str, Any]]:
 def get_products(
     category: Optional[str] = None,
     season: Optional[str] = None,
-    q: Optional[str] = None
+    q: Optional[str] = None,
+    size: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
     
@@ -67,6 +68,11 @@ def get_products(
                 query += ' AND (title ILIKE %s OR description ILIKE %s)'
                 search_term = f'%{q}%'
                 params.extend([search_term, search_term])
+            
+            if size:
+                size_pattern = f'%{size}:%'
+                query += ' AND description ILIKE %s'
+                params.append(size_pattern)
             
             query += ' ORDER BY created_at DESC'
             
