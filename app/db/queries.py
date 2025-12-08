@@ -56,8 +56,16 @@ def get_products(
                     query += f' AND category IN ({placeholders})'
                     params.extend(all_values)
                 else:
-                    query += ' AND category = %s'
-                    params.append(category)
+                    for main_cat, subcats in MAIN_CATEGORIES_WITH_SUBCATEGORIES.items():
+                        if category in subcats:
+                            all_values = [category, main_cat]
+                            placeholders = ','.join(['%s'] * len(all_values))
+                            query += f' AND category IN ({placeholders})'
+                            params.extend(all_values)
+                            break
+                    else:
+                        query += ' AND category = %s'
+                        params.append(category)
             
             if season:
                 query += ' AND season = %s'
