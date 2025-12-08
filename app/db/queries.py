@@ -94,7 +94,17 @@ def get_products(
             
             cur.execute(query, params)
             rows = cur.fetchall()
-            return [dict(row) for row in rows]
+            import json
+            results = []
+            for row in rows:
+                result = dict(row)
+                if isinstance(result.get('images_base64'), str):
+                    try:
+                        result['images_base64'] = json.loads(result['images_base64'])
+                    except:
+                        result['images_base64'] = []
+                results.append(result)
+            return results
 
 
 def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
