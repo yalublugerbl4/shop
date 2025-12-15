@@ -45,11 +45,22 @@ def get_products(
     limit: Optional[int] = None,
     offset: Optional[int] = None
 ) -> List[Dict[str, Any]]:
+    """
+    Возвращаем список товаров без тяжелых images_base64.
+    images_urls парсим из JSON, для совместимости пытаемся взять из images_base64 если там URL.
+    """
     from app.utils.category_mapping import MAIN_CATEGORIES_WITH_SUBCATEGORIES
     
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            query = 'SELECT * FROM products WHERE is_active = true'
+            # Выбираем только нужные поля
+            query = """
+                SELECT id, title, description, price_cents, category, season,
+                       source_url, created_at, updated_at, is_active,
+                       size_guide, images_urls, images_base64
+                FROM products
+                WHERE is_active = true
+            """
             params = []
             
             if category:
@@ -98,17 +109,50 @@ def get_products(
             results = []
             for row in rows:
                 result = dict(row)
-                images = result.get('images_base64')
-                if images:
-                    if isinstance(images, str):
+                
+                # images_urls
+                images_urls = result.get('images_urls')
+                if images_urls:
+                    if isinstance(images_urls, str):
                         try:
-                            result['images_base64'] = json.loads(images)
+                            result['images_urls'] = json.loads(images_urls)
                         except (json.JSONDecodeError, TypeError):
-                            result['images_base64'] = []
-                    elif not isinstance(images, list):
-                        result['images_base64'] = []
+                            result['images_urls'] = []
+                    elif not isinstance(images_urls, list):
+                        result['images_urls'] = []
                 else:
-                    result['images_base64'] = []
+                    result['images_urls'] = []
+                
+                # fallback: если images_urls нет, но images_base64 содержит URL
+                if not result['images_urls']:
+                    images_base64 = result.get('images_base64')
+                    if images_base64:
+                        if isinstance(images_base64, str):
+                            try:
+                                images_base64 = json.loads(images_base64)
+                            except (json.JSONDecodeError, TypeError):
+                                images_base64 = []
+                        if (
+                            images_base64
+                            and isinstance(images_base64, list)
+                            and isinstance(images_base64[0], str)
+                            and images_base64[0].startswith('http')
+                        ):
+                            result['images_urls'] = images_base64
+                        else:
+                            result['images_urls'] = []
+                
+                # для списка товаров не возвращаем тяжелые данные
+                result['images_base64'] = []
+                
+                # size_guide
+                size_guide = result.get('size_guide')
+                if isinstance(size_guide, str):
+                    try:
+                        result['size_guide'] = json.loads(size_guide)
+                    except (json.JSONDecodeError, TypeError):
+                        result['size_guide'] = None
+                
                 results.append(result)
             return results
 
@@ -127,9 +171,20 @@ def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
                 result = dict(row)
                 # Парсим JSON обратно
                 if isinstance(result.get('images_base64'), str):
-                    result['images_base64'] = json.loads(result['images_base64'])
+                    try:
+                        result['images_base64'] = json.loads(result['images_base64'])
+                    except (json.JSONDecodeError, TypeError):
+                        result['images_base64'] = []
+                if isinstance(result.get('images_urls'), str):
+                    try:
+                        result['images_urls'] = json.loads(result['images_urls'])
+                    except (json.JSONDecodeError, TypeError):
+                        result['images_urls'] = []
                 if isinstance(result.get('size_guide'), str):
-                    result['size_guide'] = json.loads(result['size_guide'])
+                    try:
+                        result['size_guide'] = json.loads(result['size_guide'])
+                    except (json.JSONDecodeError, TypeError):
+                        result['size_guide'] = None
                 return result
             return None
 
@@ -148,7 +203,15 @@ def get_product_by_source_url(source_url: str) -> Optional[Dict[str, Any]]:
                 result = dict(row)
                 # Парсим JSON обратно
                 if isinstance(result.get('images_base64'), str):
-                    result['images_base64'] = json.loads(result['images_base64'])
+                    try:
+                        result['images_base64'] = json.loads(result['images_base64'])
+                    except (json.JSONDecodeError, TypeError):
+                        result['images_base64'] = []
+                if isinstance(result.get('images_urls'), str):
+                    try:
+                        result['images_urls'] = json.loads(result['images_urls'])
+                    except (json.JSONDecodeError, TypeError):
+                        result['images_urls'] = []
                 return result
             return None
 
@@ -160,8 +223,8 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO products (category, season, title, description, price_cents, images_base64, source_url, size_guide)
-                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s, %(source_url)s, %(size_guide)s)
+                INSERT INTO products (category, season, title, description, price_cents, images_base64, images_urls, source_url, size_guide)
+                VALUES (%(category)s, %(season)s, %(title)s, %(description)s, %(price_cents)s, %(images_base64)s, %(images_urls)s, %(source_url)s, %(size_guide)s)
                 RETURNING *
                 """,
                 {
@@ -171,6 +234,7 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
                     'description': product_data.get('description', ''),
                     'price_cents': product_data['price_cents'],
                     'images_base64': json.dumps(product_data.get('images_base64', [])),
+                    'images_urls': json.dumps(product_data.get('images_urls', [])),
                     'source_url': product_data.get('source_url'),
                     'size_guide': product_data.get('size_guide')
                 }
@@ -179,9 +243,20 @@ def create_product(product_data: Dict[str, Any]) -> Dict[str, Any]:
             result = dict(row)
             # Парсим JSON обратно
             if isinstance(result.get('images_base64'), str):
-                result['images_base64'] = json.loads(result['images_base64'])
+                try:
+                    result['images_base64'] = json.loads(result['images_base64'])
+                except (json.JSONDecodeError, TypeError):
+                    result['images_base64'] = []
+            if isinstance(result.get('images_urls'), str):
+                try:
+                    result['images_urls'] = json.loads(result['images_urls'])
+                except (json.JSONDecodeError, TypeError):
+                    result['images_urls'] = []
             if isinstance(result.get('size_guide'), str):
-                result['size_guide'] = json.loads(result['size_guide'])
+                try:
+                    result['size_guide'] = json.loads(result['size_guide'])
+                except (json.JSONDecodeError, TypeError):
+                    result['size_guide'] = None
             return result
 
 
@@ -218,6 +293,9 @@ def update_product(
             if 'images_base64' in updates:
                 placeholders.append('images_base64 = %s')
                 params.append(json.dumps(updates['images_base64']))
+            if 'images_urls' in updates:
+                placeholders.append('images_urls = %s')
+                params.append(json.dumps(updates['images_urls']))
             if 'size_guide' in updates:
                 placeholders.append('size_guide = %s')
                 params.append(updates['size_guide'])
@@ -234,9 +312,20 @@ def update_product(
                 return None
             result = dict(row)
             if isinstance(result.get('images_base64'), str):
-                result['images_base64'] = json.loads(result['images_base64'])
+                try:
+                    result['images_base64'] = json.loads(result['images_base64'])
+                except (json.JSONDecodeError, TypeError):
+                    result['images_base64'] = []
+            if isinstance(result.get('images_urls'), str):
+                try:
+                    result['images_urls'] = json.loads(result['images_urls'])
+                except (json.JSONDecodeError, TypeError):
+                    result['images_urls'] = []
             if isinstance(result.get('size_guide'), str):
-                result['size_guide'] = json.loads(result['size_guide'])
+                try:
+                    result['size_guide'] = json.loads(result['size_guide'])
+                except (json.JSONDecodeError, TypeError):
+                    result['size_guide'] = None
             return result
 
 
